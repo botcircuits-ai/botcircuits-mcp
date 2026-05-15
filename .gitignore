@@ -1,0 +1,11 @@
+.venv
+venv
+.idea
+.DS_Store
+*.pyc
+temp
+.env
+asterisk/asterisk-*.tar.gz
+reference-voice-handler
+gcp-key.json
+research/rnd_docs/*.pdf
