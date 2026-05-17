@@ -3,15 +3,95 @@
 MCP server for the [BotCircuits](https://botcircuits.com) platform.
 
 Connects Claude Code (or any MCP-capable AI assistant) to BotCircuits so you can
-build and manage agents, sub-agents, and workflows through natural language — with
-no extra API key and no LLM inside the server.
+build and manage agents, sub-agents, and workflows through natural language.
+
+---
+
+## Quick start
+
+### 1. Install
+
+> **Note:** `botcircuits-mcp` is not yet published to PyPI. Install from GitHub.
+
+**From GitHub (recommended):**
+
+```bash
+git clone https://github.com/botcircuits/bc-mcp-server.git
+cd bc-mcp-server
+pip install -e .
+```
+
+**Or install directly via pip + git:**
+
+```bash
+pip install git+https://github.com/botcircuits/bc-mcp-server.git
+```
+
+### 2. Get your BotCircuits access token
+
+BotCircuits dashboard → **Settings → Access Keys** → copy the token.
+
+### 3. Add to your AI tool
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "botcircuits": {
+      "command": "botcircuits-mcp",
+      "env": {
+        "BOTCIRCUITS_ACCESS_TOKEN": "<your-token>"
+      }
+    }
+  }
+}
+```
+
+**Claude Code CLI:**
+
+```bash
+claude mcp add botcircuits -e BOTCIRCUITS_ACCESS_TOKEN=<your-token> -- botcircuits-mcp
+```
+
+Restart your AI agent tool.
+
+### 4. Create your first agent and workflow
+
+Tell your AI assistant (in plain English):
+
+```
+Create a BotCircuits agent called "Support Bot" with the description
+"You are a helpful customer support assistant."
+```
+
+The assistant calls `create_agent` and `update_agent_core_settings` for you.
+
+```
+Create a workflow called "Support Triage" that:
+- Greets the user
+- Asks whether they have a billing or technical issue (buttons)
+- For billing: collects their order ID (format ORD-XXXXXX) then calls
+  https://api.example.com/billing/{order_id} to look up the status
+- For technical: searches the knowledge base and answers
+- Ends with a satisfaction rating from 1 to 5
+```
+
+### 5. Iterate
+
+Continue the conversation to refine:
+
+```
+Add a live agent handoff if the satisfaction rating is 1 or 2.
+Change the greeting to mention we're available 24/7.
+Add a webhook after the billing lookup to log the result.
+```
+
+Each instruction updates the existing workflow in place.
 
 ---
 
 ## How it works
-
-The MCP server is a **pure API wrapper**. It has no LLM inside it.
-
 ```
 You → Claude Code → "build me a fund transfer workflow"
                           │
@@ -26,9 +106,6 @@ You → Claude Code → "build me a fund transfer workflow"
                     MCP server transforms JSON → platform format
                     MCP server saves to BotCircuits REST API
 ```
-
-This is the same model as N8N MCP — the AI assistant is the brain, the MCP
-server is the hands. No `ANTHROPIC_API_KEY`, no separate LLM billing.
 
 ### Schema delivery — zero setup required
 
@@ -113,88 +190,6 @@ bc-mcp-server/
 
 ---
 
-## Quick start
-
-### 1. Install
-
-```bash
-pip install botcircuits-mcp
-```
-
-### 2. Get your BotCircuits access token
-
-BotCircuits dashboard → **Settings → Access Keys** → copy the token.
-
-### 3. Add to your AI tool
-
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "botcircuits": {
-      "command": "botcircuits-mcp",
-      "env": {
-        "BOTCIRCUITS_ACCESS_TOKEN": "<your-token>"
-      }
-    }
-  }
-}
-```
-
-**Claude Code CLI:**
-
-```bash
-claude mcp add botcircuits -e BOTCIRCUITS_ACCESS_TOKEN=<your-token> -- botcircuits-mcp
-```
-
-Restart your AI tool. The BotCircuits workflow schema is delivered automatically
-on connection — no further setup needed.
-
-### 4. Create your first agent and workflow
-
-Tell your AI assistant (in plain English):
-
-```
-Create a BotCircuits agent called "Support Bot" with the description
-"You are a helpful customer support assistant."
-```
-
-The assistant calls `create_agent` and `update_agent_core_settings` for you.
-
-```
-Create a workflow called "Support Triage" that:
-- Greets the user
-- Asks whether they have a billing or technical issue (buttons)
-- For billing: collects their order ID (format ORD-XXXXXX) then calls
-  https://api.example.com/billing/{order_id} to look up the status
-- For technical: searches the knowledge base and answers
-- Ends with a satisfaction rating from 1 to 5
-```
-
-The assistant generates the intermediate workflow JSON and calls:
-1. `upload_workflow` — transforms + saves the state machine and slots
-
-```
-Publish the agent.
-```
-
-The assistant calls `publish_agent`. Your bot is live.
-
-### 5. Iterate
-
-Continue the conversation to refine:
-
-```
-Add a live agent handoff if the satisfaction rating is 1 or 2.
-Change the greeting to mention we're available 24/7.
-Add a webhook after the billing lookup to log the result.
-```
-
-Each instruction updates the existing workflow in place.
-
----
-
 ## Setup (development)
 
 ```bash
@@ -215,10 +210,6 @@ pip install -e .
 | `BOTCIRCUITS_API_BASE_URL` | `https://api.botcircuits.com` | Use `https://dev-api.botcircuits.com` for dev |
 | `BOTCIRCUITS_ACCESS_TOKEN` | — | BotCircuits dashboard → Settings → Access Keys |
 | `BOTCIRCUITS_DEFAULT_APP_ID` | — | Optional default agent ID |
-
-No `ANTHROPIC_API_KEY`. No other LLM key. The AI assistant you're already using
-(Claude Code, Cursor, etc.) does all the reasoning.
-
 ---
 
 ## Running
