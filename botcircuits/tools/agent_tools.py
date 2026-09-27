@@ -22,6 +22,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from .. import client
+from . import journeys
 
 ToolType = Literal["function", "kb", "workflow", "json"]
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
@@ -108,7 +109,8 @@ def register(mcp: FastMCP) -> None:
     ) -> dict:
         """
         Create a tool the agent's LLM can call. Create its dependency (codehook, knowledge
-        source, playbook/workflow) first. For an HTTP API prefer create_api_tool, which
+        source, playbook/workflow) first. For tool_type "workflow" this is idempotent: a
+        playbook/workflow has exactly one agent tool, and calling this again updates it. For an HTTP API prefer create_api_tool, which
         builds the codehook and the tool together.
 
         The name and description are all the LLM sees when choosing: say what it does, when
@@ -122,8 +124,21 @@ def register(mcp: FastMCP) -> None:
             tool_data: function {"functionId"} · kb {"filterKb", "topK"} · workflow {"workflowId"} · json {"json": "<string>"}
             parameters: {"arg": {"type", "description", "required"}} (ignored for workflow/json; kb gets `query`).
         """
+        existing_id = None
+        if tool_type == "workflow" and isinstance(tool_data, dict):
+            # The tool already connecting this journey is the same tool, not a name clash.
+            linked = journeys.tools_for(await client.list_prompt(app_id, "tools"), tool_data.get("workflowId"))
+            existing_id = linked[0].get("id") if linked else None
         record = await validate_tool(app_id, {"name": name, "description": description, "type": tool_type,
-                                              "parameters": parameters or {}, "toolData": tool_data})
+                                              "parameters": parameters or {}, "toolData": tool_data},
+                                     exclude_id=existing_id)
+        if tool_type == "workflow":
+            # One record per playbook/workflow: reuse or create it, never a second one.
+            workflow_id = record["toolData"]["workflowId"]
+            action = await journeys.find_action(app_id, workflow_id)
+            return await journeys.expose_as_agent_tool(
+                app_id, workflow_id, action.get("name") or name, description,
+                await journeys.journey_mode(app_id, workflow_id), tool_name=name)
         return await client.create_prompt(app_id, "tools", record)
 
     @mcp.tool()
@@ -139,6 +154,16 @@ def register(mcp: FastMCP) -> None:
         current = {k: v for k, v in (await client.get_prompt(app_id, "tools", tool_id)).items()
                    if k not in _SERVER_FIELDS}
         record = await validate_tool(app_id, {**current, **changes}, exclude_id=tool_id)
+        workflow_id = (record.get("toolData") or {}).get("workflowId") if record.get("type") == "workflow" else None
+        if workflow_id:
+            others = [t for t in journeys.tools_for(await client.list_prompt(app_id, "tools"), workflow_id)
+                      if t.get("id") != tool_id]
+            if others:
+                raise ValueError(f"Playbook/workflow '{workflow_id}' is already connected by agent tool "
+                                 f"'{others[0].get('name')}' (id {others[0].get('id')}); update that one instead.")
+            if current.get("managedByPlaybook") and "name" in changes:
+                raise ValueError("This tool is managed by its playbook: the console resets its name. Change the "
+                                 "playbook's name or description with update_playbook instead.")
         return await client.update_prompt(app_id, "tools", tool_id, record)
 
     @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))

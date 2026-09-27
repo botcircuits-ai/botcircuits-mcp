@@ -75,8 +75,23 @@ def _slug(text: str, limit: int) -> str:
     return (re.sub(r"[^a-z0-9_]+", "_", (text or "").lower()).strip("_") or "workflow")[:limit]
 
 
-async def expose_as_agent_tool(app_id: str, workflow_id: str, name: str, description: str, mode: str) -> dict:
-    """Register (or refresh) a type=workflow agent tool so the main agent can start the journey."""
+_SERVER_FIELDS = ("id", "pk", "sk", "appId", "createdAt", "modifiedAt")
+
+
+def tools_for(tools: list, workflow_id: str) -> list:
+    return [t for t in tools if (t.get("toolData") or {}).get("workflowId") == workflow_id]
+
+
+async def expose_as_agent_tool(app_id: str, workflow_id: str, name: str, description: str, mode: str,
+                               tool_name: str | None = None) -> dict:
+    """Ensure exactly ONE type=workflow agent tool starts this journey (idempotent).
+
+    Playbooks: the record is always the console-managed `playbook-<id>` (same payload as
+    pages/playbooks/model/playbook-tools.js). The console recreates that record whenever a
+    playbook with a description is opened, so any other record pointing at the playbook
+    would become a second tool. Canvas workflows: the first existing record is kept.
+    Other records that reference the same journey are removed and reported.
+    """
     app = await client.get_app(app_id)
     if app.get("appMode") != "prompt_based":
         return {"registered": False,
@@ -85,8 +100,8 @@ async def expose_as_agent_tool(app_id: str, workflow_id: str, name: str, descrip
     if len(description) < 10:
         return {"registered": False, "note": "Give it a 'when to use' description first."}
     tools = await client.list_prompt(app_id, "tools")
+    linked = tools_for(tools, workflow_id)
     if mode == AUTHORING_MODE_PLAYBOOK:
-        # Same convention as the console (pages/playbooks/model/playbook-tools.js).
         tool_id = f"playbook-{workflow_id}"
         suffix = re.sub(r"[^a-zA-Z0-9_-]", "_", workflow_id)[-24:]
         payload: dict[str, Any] = {
@@ -94,23 +109,39 @@ async def expose_as_agent_tool(app_id: str, workflow_id: str, name: str, descrip
             "description": description, "parameters": {}, "toolData": {"workflowId": workflow_id},
             "managedByPlaybook": workflow_id,
         }
-        existing = next((t for t in tools if t.get("id") == tool_id), None)
+        keep = next((t for t in tools if t.get("id") == tool_id), None)
     else:
-        existing = next((t for t in tools if (t.get("toolData") or {}).get("workflowId") == workflow_id), None)
-        tool_name = existing.get("name") if existing else f"workflow_{_slug(name, 48)}"
-        taken = {t.get("name") for t in tools if t is not existing}
-        base, n = tool_name, 2
-        while tool_name in taken:
-            tool_name, n = f"{base}_{n}", n + 1
-        payload = {"name": tool_name, "type": "workflow", "description": description, "parameters": {},
+        keep = linked[0] if linked else None
+        wanted = tool_name or (keep.get("name") if keep else f"workflow_{_slug(name, 48)}")
+        taken = {t.get("name") for t in tools if t is not keep and t not in linked}
+        base, n = wanted, 2
+        while wanted in taken:
+            wanted, n = f"{base}_{n}", n + 1
+        payload = {"name": wanted, "type": "workflow", "description": description, "parameters": {},
                    "toolData": {"workflowId": workflow_id}}
-    if existing:
-        body = {k: v for k, v in {**existing, **payload}.items()
-                if k not in ("id", "pk", "sk", "appId", "createdAt", "modifiedAt")}
-        await client.update_prompt(app_id, "tools", existing["id"], body)
-        return {"registered": True, "toolId": existing["id"], "toolName": payload["name"]}
-    created = await client.create_prompt(app_id, "tools", payload)
-    return {"registered": True, "toolId": created.get("id") or payload.get("id"), "toolName": payload["name"]}
+    if keep:
+        body = {k: v for k, v in {**keep, **payload}.items() if k not in _SERVER_FIELDS}
+        await client.update_prompt(app_id, "tools", keep["id"], body)
+        kept_id = keep["id"]
+    else:
+        created = await client.create_prompt(app_id, "tools", payload)
+        kept_id = created.get("id") or payload.get("id")
+    removed = []
+    for duplicate in linked:
+        if duplicate.get("id") != kept_id:
+            await client.delete_prompt(app_id, "tools", duplicate["id"])
+            removed.append({"id": duplicate["id"], "name": duplicate.get("name")})
+    result = {"registered": True, "toolId": kept_id, "toolName": payload["name"]}
+    if removed:
+        result["removedDuplicates"] = removed
+    if mode == AUTHORING_MODE_PLAYBOOK and tool_name and tool_name != payload["name"]:
+        result["note"] = ("Playbook tools use the console's naming convention; a custom name would be "
+                          "reset the next time the playbook is opened in the console.")
+    return result
+
+
+async def journey_mode(app_id: str, workflow_id: str) -> str:
+    return AUTHORING_MODE_PLAYBOOK if is_playbook(await client.get_journey(app_id, workflow_id)) else "workflow"
 
 
 def merge_slots(existing: dict, provided: dict, auto: dict) -> dict:

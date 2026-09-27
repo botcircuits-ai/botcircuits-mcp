@@ -45,9 +45,12 @@ HOW TO WORK
 5. Only delete when the user asked for it.
 
 AFTER CREATING A PLAYBOOK OR WORKFLOW, always ask: "Would you like to connect it to a
-sub-agent's capabilities, or directly as a main agent tool?" — then use
-update_sub_agent (capability type workflow) or create_agent_tool(tool_type="workflow") /
-the expose_as_agent_tool flag. Do not report the task as done without asking.
+sub-agent's capabilities, or directly as a main agent tool?" Then do exactly ONE of:
+- main agent: update_playbook / upload_workflow with expose_as_agent_tool=true (or
+  create_agent_tool with tool_type "workflow" — same single record, never both needed);
+- sub-agent: update_sub_agent adding a capability {{"type": "workflow", "toolData": {{"workflowId": "<id>"}}}}.
+A playbook/workflow has at most one main-agent tool; the server keeps it that way.
+Do not report the task as done without asking.
 
 {CAPABILITY_GUIDE}
 {PLAYBOOK_DESIGN}
