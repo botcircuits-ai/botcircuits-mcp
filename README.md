@@ -17,7 +17,7 @@ build and manage agents, sub-agents, and workflows through natural language.
 
 ```bash
 git clone https://github.com/botcircuits-ai/botcircuits-mcp.git
-cd bc-mcp-server
+cd botcircuits-mcp
 pip install -e .
 ```
 
