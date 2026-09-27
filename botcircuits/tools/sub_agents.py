@@ -1,80 +1,77 @@
 """
-MCP operations for BotCircuits Sub-Agents.
+MCP tools for BotCircuits Sub-Agents.
 
-A Sub-Agent is a specialised, focused agent the Main Agent delegates tasks to
-during conversations. The Main Agent's LLM reads the sub-agent's name and
-description to decide when to hand off.
+A sub-agent is a specialist the main agent delegates to; it runs the same agent loop with
+its own instructions and capabilities, and returns its result to the main agent.
+Stored as an agent tool with type "sub_agent" (REST /prompt-config/tools):
 
-REST endpoint: /apps/{appId}/prompt-config/tools  (type = "sub_agent")
-
-Each sub-agent has:
-  name         — snake_case identifier the LLM uses to route, e.g. "billing_agent"
-  description  — when the Main Agent should delegate to this sub-agent
-  instructions — system prompt / persona for the sub-agent's own LLM
-  capabilities — named capabilities the sub-agent can invoke (each with its own
-                 type, description, parameters, and configuration)
-  parameters   — inputs the Main Agent passes when it delegates
-
-Capability types available inside a sub-agent
-----------------------------------------------
-workflow  Triggers a BotCircuits workflow.  configuration: { "workflowId": "<id>" }
-function  Calls a Lambda (codehook) or HTTP webhook.
-kb        Queries a knowledge base via RAG.
-json      Returns a static JSON payload.
-
-capabilities dict shape
------------------------
-{
-  "lookup_order": {
-    "name": "lookup_order",
-    "type": "function",
-    "description": "Look up an order by ID",
-    "parameters": {
-      "order_id": { "type": "string", "description": "Order ID", "required": true }
-    },
-    "toolData": {}
-  },
-  "check_policy": {
-    "name": "check_policy",
-    "type": "kb",
-    "description": "Search the returns policy knowledge base",
-    "parameters": {},
-    "toolData": {}
-  }
-}
+  toolData.instructions  system prompt of the sub-agent
+  toolData.tools         inline capabilities keyed by name:
+      {"lookup_order": {"type": "function", "description": "...", "parameters": {...},
+                        "toolData": {"functionId": "<codehookId>"}}}
+Capability types: function · kb · workflow · json (no nested sub_agent).
 """
 
-from typing import Any, Optional
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+
 from .. import client
 
 _TYPE = "sub_agent"
+_CAPABILITY_TYPES = {"function", "kb", "workflow", "json"}
+
+
+async def _validate(app_id: str, record: dict, exclude_id: str | None = None) -> dict:
+    data = record.get("toolData") or {}
+    if not (data.get("instructions") or "").strip():
+        raise ValueError("instructions are required")
+    capabilities = data.get("tools") or {}
+    hooks = workflows = None
+    for cap_name, cap in capabilities.items():
+        if not isinstance(cap, dict) or cap.get("type") not in _CAPABILITY_TYPES:
+            raise ValueError(f"capability '{cap_name}' type must be one of {sorted(_CAPABILITY_TYPES)} "
+                             "(sub-agents cannot contain sub-agents)")
+        cap.setdefault("name", cap_name)
+        cap_data = cap.get("toolData") or {}
+        if cap["type"] == "function":
+            hooks = hooks if hooks is not None else {c.get("codehookId") for c in await client.list_codehooks(app_id)}
+            if cap_data.get("functionId") not in hooks:
+                raise ValueError(f"capability '{cap_name}': toolData.functionId must be an existing codehook")
+        if cap["type"] == "workflow":
+            workflows = workflows if workflows is not None else {a.get("id") for a in await client.list_actions(app_id)}
+            if cap_data.get("workflowId") not in workflows:
+                raise ValueError(f"capability '{cap_name}': toolData.workflowId must be an existing playbook/workflow")
+    for other in await client.list_prompt(app_id, "tools"):
+        if other.get("name") == record.get("name") and other.get("id") != exclude_id:
+            raise ValueError(f"a tool or sub-agent named '{record.get('name')}' already exists")
+    return record
 
 
 def register(mcp: FastMCP) -> None:
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def list_sub_agents(app_id: str) -> list:
         """
-        List all sub-agents registered on an agent.
+        List the agent's sub-agents.
 
         Args:
             app_id: The agent / app ID.
         """
-        all_entries = await client.list_skills(app_id)
-        return [e for e in (all_entries or []) if e.get("type") == _TYPE]
+        return [{k: t.get(k) for k in ("id", "name", "description")}
+                for t in await client.list_prompt(app_id, "tools") if t.get("type") == _TYPE]
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def get_sub_agent(app_id: str, sub_agent_id: str) -> dict:
         """
-        Get the full configuration of a sub-agent, including its instructions
-        and capabilities.
+        Get a sub-agent's full configuration, including instructions and capabilities.
 
         Args:
-            app_id:        The agent / app ID.
-            sub_agent_id:  The sub-agent ID.
+            app_id: The agent / app ID.
+            sub_agent_id: The sub-agent id.
         """
-        return await client.get_skill(app_id, sub_agent_id)
+        return await client.get_prompt(app_id, "tools", sub_agent_id)
 
     @mcp.tool()
     async def create_sub_agent(
@@ -82,109 +79,77 @@ def register(mcp: FastMCP) -> None:
         name: str,
         description: str,
         instructions: str,
-        capabilities: Optional[dict[str, Any]] = None,
-        parameters: Optional[dict[str, Any]] = None,
+        capabilities: dict[str, Any] | None = None,
+        parameters: dict[str, Any] | None = None,
     ) -> dict:
         """
-        Create a new sub-agent on an agent.
+        Create a sub-agent the main agent delegates to. The name and description are what the
+        main agent reads to decide when to delegate — make them precise.
 
-        The name and description are what the Main Agent LLM reads to decide when
-        to delegate — write them as precise, domain-specific criteria.
-
-        The instructions field is the system prompt that scopes the sub-agent's
-        LLM to its specialised domain.
-
-        Capabilities are the things the sub-agent can do. Each entry is keyed by
-        capability name:
-          {
-            "lookup_order": {
-              "name": "lookup_order",
-              "type": "function",
-              "description": "Look up an order by ID",
-              "parameters": {
-                "order_id": { "type": "string", "description": "Order ID", "required": true }
-              },
-              "toolData": {}
-            }
-          }
-
-        Capability types: workflow · function · kb · json
-
-        Parameters are the inputs the Main Agent passes when it delegates:
-          {
-            "customer_id": { "type": "string", "description": "Customer ID", "required": true }
-          }
+        Capabilities are inline tools keyed by name, e.g.
+          {"lookup_order": {"type": "function", "description": "Look up an order by ID",
+                            "parameters": {"order_id": {"type": "string", "description": "Order ID", "required": true}},
+                            "toolData": {"functionId": "api_lookup_order"}},
+           "run_returns": {"type": "workflow", "description": "Start the returns playbook",
+                           "toolData": {"workflowId": "<playbook id>"}}}
 
         Args:
-            app_id:        The agent / app ID.
-            name:          Sub-agent name in snake_case (e.g. "billing_agent").
-            description:   When the Main Agent should delegate to this sub-agent.
-            instructions:  System prompt / persona for the sub-agent's LLM.
-            capabilities:  Named capabilities the sub-agent can invoke (optional).
-            parameters:    Inputs the Main Agent passes on delegation (optional).
+            app_id: The agent / app ID.
+            name: snake_case name, e.g. billing_agent.
+            description: When the main agent should delegate to it.
+            instructions: System prompt / persona of the sub-agent.
+            capabilities: Inline capabilities (function · kb · workflow · json).
+            parameters: Inputs the main agent passes when delegating.
         """
-        payload: dict[str, Any] = {
-            "name": name,
-            "type": _TYPE,
-            "description": description,
-            "parameters": parameters or {},
-            "toolData": {
-                "instructions": instructions,
-                "tools": capabilities or {},
-            },
-        }
-        return await client.create_skill(app_id, payload)
+        record = await _validate(app_id, {
+            "name": name, "type": _TYPE, "description": description, "parameters": parameters or {},
+            "toolData": {"instructions": instructions, "tools": capabilities or {}},
+        })
+        return await client.create_prompt(app_id, "tools", record)
 
     @mcp.tool()
     async def update_sub_agent(
         app_id: str,
         sub_agent_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        instructions: Optional[str] = None,
-        capabilities: Optional[dict[str, Any]] = None,
-        parameters: Optional[dict[str, Any]] = None,
+        name: str | None = None,
+        description: str | None = None,
+        instructions: str | None = None,
+        capabilities: dict[str, Any] | None = None,
+        parameters: dict[str, Any] | None = None,
     ) -> dict:
         """
-        Update an existing sub-agent.
-
-        Fetches the current record first and merges only the fields you supply —
-        omitted fields are preserved. Supplying capabilities replaces the entire
-        capabilities dict; fetch the sub-agent first if you only want to add one.
+        Update a sub-agent; omitted fields are preserved. Supplying `capabilities` replaces the
+        whole capability map — read the sub-agent first to add or change one.
 
         Args:
-            app_id:        The agent / app ID.
-            sub_agent_id:  The sub-agent ID to update.
-            name:          New name (optional).
-            description:   New delegation description (optional).
-            instructions:  New sub-agent system prompt (optional).
-            capabilities:  New capabilities dict — replaces existing (optional).
-            parameters:    New parameters dict — replaces existing (optional).
+            app_id: The agent / app ID.
+            sub_agent_id: The sub-agent id.
+            name: New name.
+            description: New delegation description.
+            instructions: New system prompt.
+            capabilities: New capability map (replaces existing).
+            parameters: New parameters (replaces existing).
         """
-        current = await client.get_skill(app_id, sub_agent_id)
-        current_tool_data = current.get("toolData", {})
+        current = {k: v for k, v in (await client.get_prompt(app_id, "tools", sub_agent_id)).items()
+                   if k not in ("id", "pk", "sk", "appId", "createdAt", "modifiedAt")}
+        tool_data = dict(current.get("toolData") or {})
+        if instructions is not None:
+            tool_data["instructions"] = instructions
+        if capabilities is not None:
+            tool_data["tools"] = capabilities
+        record = {**current, "type": _TYPE, "toolData": tool_data,
+                  **{k: v for k, v in {"name": name, "description": description, "parameters": parameters}.items()
+                     if v is not None}}
+        return await client.update_prompt(app_id, "tools", sub_agent_id,
+                                          await _validate(app_id, record, exclude_id=sub_agent_id))
 
-        payload: dict[str, Any] = {
-            "name":        name        if name        is not None else current.get("name", ""),
-            "type":        _TYPE,
-            "description": description if description is not None else current.get("description", ""),
-            "parameters":  parameters  if parameters  is not None else current.get("parameters", {}),
-            "toolData": {
-                "instructions": instructions if instructions is not None
-                                else current_tool_data.get("instructions", ""),
-                "tools": capabilities if capabilities is not None
-                         else current_tool_data.get("tools", {}),
-            },
-        }
-        return await client.update_skill(app_id, sub_agent_id, payload)
-
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
     async def delete_sub_agent(app_id: str, sub_agent_id: str) -> dict:
         """
-        Delete a sub-agent from an agent.
+        Delete a sub-agent. Only when the user asked for it.
 
         Args:
-            app_id:        The agent / app ID.
-            sub_agent_id:  The sub-agent ID to delete.
+            app_id: The agent / app ID.
+            sub_agent_id: The sub-agent id.
         """
-        return await client.delete_skill(app_id, sub_agent_id)
+        return await client.delete_prompt(app_id, "tools", sub_agent_id)

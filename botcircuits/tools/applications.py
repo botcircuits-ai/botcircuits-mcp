@@ -1,75 +1,119 @@
 """
-MCP tools for BotCircuits Application management.
+MCP tools for BotCircuits applications (agents): overview, core settings and the global
+instructions of prompt-based agents.
 """
 
-from typing import Optional
+import asyncio
+from typing import Literal
+
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+
 from .. import client
-from ..config import settings
+
+_CONSOLE = "https://platform.botcircuits.com/"
 
 
 def register(mcp: FastMCP) -> None:
 
-    @mcp.tool()
-    async def list_applications() -> dict:
-        """List all BotCircuits applications in your account."""
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def list_applications() -> list | dict:
+        """List all BotCircuits applications (agents) in your account."""
         return await client.list_apps()
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def get_application(app_id: str) -> dict:
         """
-        Get the full configuration of a BotCircuits application.
+        Get an application's metadata (name, appMode, llm settings).
 
         Args:
             app_id: The application ID.
         """
         return await client.get_app(app_id)
 
-    @mcp.tool()
-    async def create_application(
-        name: str,
-        description: Optional[str] = None,
-    ) -> dict:
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def get_application_overview(app_id: str) -> dict:
         """
-        Create a new BotCircuits application.
+        Read the whole agent configuration in one call: app metadata, global instructions,
+        core settings, agent tools, sub-agents, skills, MCP servers, playbooks/workflows,
+        codehooks and knowledge sources (ids and names). Call this before planning changes.
 
         Args:
-            name: Human-readable name for the application.
-            description: Optional short description of the application's purpose.
+            app_id: The application ID.
         """
-        # payload: dict = {"name": name}
-        # if description:
-        #     payload["description"] = description
-        # return await client.create_app(**payload)
-        return "Currently not allow to create application through mcp. please visit https://platform.botcircuits.com/"
+        calls = {
+            "app": client.get_app(app_id),
+            "instructions": client.get_instructions(app_id),
+            "settings": client.get_agent_core_settings(app_id),
+            "tools": client.list_prompt(app_id, "tools"),
+            "skills": client.list_prompt(app_id, "skills"),
+            "mcpServers": client.list_prompt(app_id, "mcp_servers"),
+            "actions": client.list_actions(app_id),
+            "codehooks": client.list_codehooks(app_id),
+            "knowledge": client.list_data_sources(app_id),
+        }
+        values = dict(zip(calls, await asyncio.gather(*calls.values(), return_exceptions=True), strict=True))
+        if isinstance(values["app"], Exception):
+            raise values["app"]
+        errors = {k: str(v) for k, v in values.items() if isinstance(v, Exception)}
+        get = lambda k: [] if k in errors else values[k]  # noqa: E731
+        app = values["app"] or {}
+        prompt = ({} if "instructions" in errors else values["instructions"] or {}).get("globalPrompt") or ""
+        tools = get("tools")
+        return {
+            "app": {k: app.get(k) for k in ("appId", "name", "description", "appMode")},
+            "promptBased": app.get("appMode") == "prompt_based",
+            "globalPrompt": prompt[:3000] + ("…" if len(prompt) > 3000 else ""),
+            "settings": {} if "settings" in errors else values["settings"],
+            "agentTools": [{k: t.get(k) for k in ("id", "name", "type", "toolData")}
+                           for t in tools if t.get("type") != "sub_agent"],
+            "subAgents": [{k: t.get(k) for k in ("id", "name", "description")} for t in tools if t.get("type") == "sub_agent"],
+            "skills": [{k: s.get(k) for k in ("id", "name", "description")} for s in get("skills")],
+            "mcpServers": [{k: s.get(k) for k in ("id", "name", "url", "allowedTools")} for s in get("mcpServers")],
+            "workflows": [{"id": a.get("id"), "name": a.get("name"), "authoringMode": a.get("authoringMode") or "workflow"}
+                          for a in get("actions") if a.get("actionType") == "workflow"],
+            "codehooks": [c.get("codehookId") for c in get("codehooks")],
+            "knowledgeSources": [{k: d.get(k) for k in ("dataSourceId", "dataSourceType", "modelStatus")}
+                                 for d in get("knowledge")],
+            "readErrors": errors,
+        }
 
     @mcp.tool()
-    async def delete_application(app_id: str) -> dict:
+    async def create_application(name: str, description: str | None = None) -> str:
         """
-        Delete a BotCircuits application and all its associated data.
+        Create a new BotCircuits application. Not available through MCP yet.
 
         Args:
-            app_id: The application ID to delete.
+            name: Application name.
+            description: Short description.
         """
-        # return await client.delete_app(app_id)
-        return "Currently not allow to delete application through mcp. please visit https://platform.botcircuits.com/"
+        return f"Creating applications through MCP is not allowed yet. Please use {_CONSOLE}"
 
-    @mcp.tool()
-    async def publish_application(app_id: str) -> dict:
+    @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
+    async def delete_application(app_id: str) -> str:
         """
-        Publish (deploy) an application's current configuration to production.
+        Delete an application. Not available through MCP yet.
 
         Args:
-            app_id: The application ID to publish.
+            app_id: The application ID.
         """
-        # return await client.publish_app(app_id)
-        return "Currently not allow to publish application through mcp. please visit https://platform.botcircuits.com/"
+        return f"Deleting applications through MCP is not allowed yet. Please use {_CONSOLE}"
 
     @mcp.tool()
+    async def publish_application(app_id: str) -> str:
+        """
+        Publish an application to production. Not available through MCP yet.
+
+        Args:
+            app_id: The application ID.
+        """
+        return f"Publishing applications through MCP is not allowed yet. Please use {_CONSOLE}"
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def get_application_core_settings(app_id: str) -> dict:
         """
-        Get the core LLM settings for an application: system prompt (agentDescription),
-        default error message, bot language, and KB top-results count.
+        Get core settings: agentDescription, defaultErrorMessage, botLanguage, kbTopResults,
+        vectorSearch, defaultWorkflow.
 
         Args:
             app_id: The application ID.
@@ -79,28 +123,61 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool()
     async def update_application_core_settings(
         app_id: str,
-        application_description: Optional[str] = None,
-        default_error_message: Optional[str] = None,
-        bot_language: Optional[str] = None,
-        kb_top_results: Optional[int] = None,
+        application_description: str | None = None,
+        default_error_message: str | None = None,
+        bot_language: str | None = None,
+        kb_top_results: int | None = None,
+        vector_search: bool | None = None,
     ) -> dict:
         """
-        Update the core LLM settings for a BotCircuits application.
+        Update core settings. Unspecified fields — including the stored authConfig and
+        defaultWorkflow — are preserved. For a prompt-based agent's system prompt use
+        update_agent_instructions instead.
 
         Args:
             app_id: The application ID.
-            application_description: System prompt / persona description for the application LLM.
-            default_error_message: Message shown to users when an unexpected error occurs.
-            bot_language: Language code for the application (e.g. 'en', 'fr').
-            kb_top_results: Number of top results to retrieve from knowledge base RAG search.
+            application_description: Agent description (agentDescription).
+            default_error_message: Message shown when an unexpected error occurs.
+            bot_language: Bot language, e.g. 'english'.
+            kb_top_results: Number of knowledge-base results retrieved per search.
+            vector_search: Enable vector search.
         """
-        payload: dict = {"authConfig": {}}  # required field by the backend
-        if application_description is not None:
-            payload["agentDescription"] = application_description
-        if default_error_message is not None:
-            payload["defaultErrorMessage"] = default_error_message
-        if bot_language is not None:
-            payload["botLanguage"] = bot_language
-        if kb_top_results is not None:
-            payload["kbTopResults"] = kb_top_results
-        return await client.save_agent_core_settings(app_id, payload)
+        changes = {k: v for k, v in {
+            "agentDescription": application_description, "defaultErrorMessage": default_error_message,
+            "botLanguage": bot_language, "kbTopResults": kb_top_results, "vectorSearch": vector_search,
+        }.items() if v is not None}
+        return await client.save_agent_core_settings(app_id, changes)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def get_agent_instructions(app_id: str) -> dict:
+        """
+        Read a prompt-based agent's global instructions (globalPrompt, voice prompt, default message).
+
+        Args:
+            app_id: The application ID.
+        """
+        return await client.get_instructions(app_id)
+
+    @mcp.tool()
+    async def update_agent_instructions(app_id: str, global_prompt: str,
+                                        mode: Literal["replace", "append"] = "replace") -> dict:
+        """
+        Write a prompt-based agent's global instructions (its system prompt).
+
+        State the role, scope, tone, when to use each tool / skill / playbook (by runtime
+        name), how to handle missing inputs, grounding rules and human handoff. Keep it
+        short; details belong in skills and tool descriptions.
+
+        Args:
+            app_id: The application ID.
+            global_prompt: The instruction text.
+            mode: "replace" overwrites; "append" adds a paragraph after the current prompt.
+        """
+        text = global_prompt.strip()
+        if not text:
+            raise ValueError("global_prompt cannot be empty")
+        if mode == "append":
+            current = (await client.get_instructions(app_id)).get("globalPrompt") or ""
+            text = f"{current.rstrip()}\n\n{text}" if current.strip() else text
+        await client.save_instructions(app_id, {"globalPrompt": text})
+        return {"saved": True, "globalPromptLength": len(text)}

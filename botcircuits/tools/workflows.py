@@ -1,149 +1,207 @@
 """
-MCP tools for BotCircuits Workflow (Journey) management.
+MCP tools for BotCircuits canvas Workflows (journeys) and the construct-selection policy.
 
-A Workflow (called "Journey" internally) is a deterministic state-machine
-that runs structured tasks without calling the LLM on every step — saving
-60-70% of token cost vs a fully LLM-driven approach.
+A workflow is a deterministic state machine drawn on the console canvas. It is reserved
+for complex processes: more than 30 steps, more than 20 conditional nodes, or a step type
+playbooks cannot express. Everything smaller is a playbook (see playbooks.py).
 
-Key concepts
-------------
-trigger      : How the workflow is started.
-               • triggerType="intent"  — LLM routes here based on user intent.
-                 Requires `intent` (unique name used as journeyId).
-               • triggerType="event"   — Started programmatically by named events.
-                 Requires `events` list (e.g. ["action", "scheduled"]).
-
-stateConfig  : The state machine definition produced by bc-text-to-workflow.
-               Contains `stmDefinition`, `metadata`, and `slotStateMap`.
-
-slots        : Variable definitions the workflow collects from users.
-               Each slot has a dataType, content (description / regex / values),
-               and optional dependencies.
+The host AI writes the intermediate JSON (botcircuits://workflow-schema); this server
+transforms it (workflow/transform.py), validates it against the runtime's rules
+(workflow/validator.py) and saves it.
 """
 
-from typing import Any, Literal, Optional
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+
 from .. import client
+from ..workflow.complexity import (
+    WORKFLOW_MIN_CONDITIONS,
+    WORKFLOW_MIN_STEPS,
+    playbook_complexity,
+    recommend,
+    workflow_complexity,
+)
+from ..workflow.transform import transform_to_platform_format
+from ..workflow.validator import validate_workflow
+from . import journeys
+from .playbooks import delete_journey_and_tools
+
+
+async def check_workflow(app_id: str, intermediate: dict, existing_slots: dict) -> dict:
+    if not isinstance(intermediate, dict) or not isinstance((intermediate.get("stmDefinition") or {}).get("states"), dict):
+        return {"errors": ['intermediate must be {"stmDefinition": {"startAt", "states"}, "slots": {...}}'],
+                "warnings": []}
+    platform = transform_to_platform_format(intermediate)
+    stm = platform["stm"]
+    slots = {**existing_slots, **platform["slots"]}
+    check = validate_workflow(stm["stmDefinition"], slots, **await journeys.known_ids(app_id))
+    return {"platform": platform, "errors": check.errors, "warnings": check.warnings, "auto": check.auto_slots,
+            "complexity": workflow_complexity(stm["stmDefinition"])}
 
 
 def register(mcp: FastMCP) -> None:
 
-    @mcp.tool()
-    async def list_workflows(app_id: str) -> dict:
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def recommend_implementation(
+        summary: str,
+        estimated_steps: int,
+        decision_points: int,
+        multi_turn_input: bool,
+        must_follow_fixed_order: bool,
+        single_action: bool,
+        guidance_only: bool,
+        needs_features: list[str] | None = None,
+    ) -> dict:
         """
-        List all workflows (journeys) registered in a BotCircuits agent.
+        Decide which BotCircuits construct implements one capability. Call before building.
+
+        Policy: fetch/act operations are agent tools (codehook or API); ordered multi-step
+        processes are playbooks; canvas workflows only above 30 steps or 20 conditional
+        nodes, or for playbook-unsupported steps.
+
+        Args:
+            summary: One sentence describing the capability.
+            estimated_steps: Steps it needs (messages, questions, calls, assignments).
+            decision_points: Branch / condition points.
+            multi_turn_input: It asks the user several things across turns.
+            must_follow_fixed_order: Steps must happen in an enforced order.
+            single_action: One fetch/act call with arguments (e.g. get weather for a city).
+            guidance_only: Know-how the model applies flexibly with existing tools.
+            needs_features: Playbook-unsupported features needed, from: image_message, language_selector, auth, integration, custom_action, pause, ai_task, nested_if, attached_conditions.
+        """
+        return recommend(summary=summary, estimated_steps=estimated_steps, decision_points=decision_points,
+                         multi_turn_input=multi_turn_input, must_follow_fixed_order=must_follow_fixed_order,
+                         single_action=single_action, guidance_only=guidance_only, needs_features=needs_features)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def list_workflows(app_id: str) -> list:
+        """
+        List all playbooks and canvas workflows (id, name, description, authoringMode).
 
         Args:
             app_id: The agent / app ID.
         """
-        return await client.list_journeys(app_id)
+        return [{"id": a.get("id"), "name": a.get("name"), "description": a.get("description"),
+                 "authoringMode": a.get("authoringMode") or "workflow"}
+                for a in await client.list_actions(app_id) if a.get("actionType") == "workflow"]
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def get_workflow(app_id: str, workflow_id: str) -> dict:
         """
-        Get the full configuration of a workflow, including its state machine
-        definition, slots, and metadata.
+        Get a canvas workflow's state machine definition and slots (playbooks: use get_playbook).
 
         Args:
             app_id: The agent / app ID.
-            workflow_id: The workflow / journey ID.
+            workflow_id: The workflow id.
         """
-        return await client.get_journey(app_id, workflow_id)
+        action = await journeys.find_action(app_id, workflow_id)
+        journey = await client.get_journey(app_id, workflow_id)
+        if journeys.is_playbook(journey):
+            playbook = journeys.metadata_of(journey).get("playbook") or {}
+            return {"id": workflow_id, "authoringMode": "playbook",
+                    "note": "This is a playbook; read and edit it with get_playbook / update_playbook.",
+                    "complexity": playbook_complexity(playbook).as_dict()}
+        stm = journey.get("stm") if isinstance(journey.get("stm"), dict) else {}
+        definition = stm.get("stmDefinition") or {}
+        return {"id": workflow_id, "name": action.get("name"), "description": action.get("description"),
+                "authoringMode": "workflow", "stmDefinition": definition, "slots": journey.get("slots") or {},
+                "complexity": workflow_complexity(definition).as_dict(),
+                "note": "State ids are the platform's numeric ids; you may send them back as-is in upload_workflow."}
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def validate_workflow_definition(app_id: str, intermediate: dict) -> dict:
+        """
+        Transform and check an intermediate workflow without saving it.
+
+        Reports errors the runtime would otherwise fail on silently (unknown stateType, broken
+        prompts, dangling next, missing slot definitions, unknown codehooks/knowledge) and the
+        complexity against the workflow threshold.
+
+        Args:
+            app_id: The agent / app ID.
+            intermediate: {"stmDefinition": {...}, "slots": {...}} per botcircuits://workflow-schema.
+        """
+        result = await check_workflow(app_id, intermediate, {})
+        complexity = result.get("complexity")
+        return {"valid": not result["errors"], "errors": result["errors"], "warnings": result["warnings"],
+                "complexity": complexity.as_dict() if complexity else None}
 
     @mcp.tool()
-    async def save_workflow_stm(
+    async def upload_workflow(
         app_id: str,
-        workflow_id: str,
-        stm_definition: dict,
-        metadata: Optional[dict] = None,
+        name: str,
+        description: str,
+        intermediate: dict,
+        workflow_id: str | None = None,
+        expose_as_agent_tool: bool = False,
     ) -> dict:
         """
-        Upload the state machine (STM) definition for a workflow.
+        Create or replace a CANVAS WORKFLOW from intermediate JSON (transform + validate + save).
 
-        This is the core execution graph. It tells the BotCircuits runtime how to
-        traverse states, collect slots, call APIs, and send messages.
-
-        `stm_definition` shape:
-        {
-          "startAt": "<state-id>",
-          "states": { "<id>": { "next": "...", "stateConfig": {...} }, ... }
-        }
-
-        `metadata` is the ReactFlow visual graph:
-        { "nodes": [...], "edges": [...] }
-
-        Prefer upload_workflow for a one-shot create (transform + save STM + save slots).
+        Reserved for complex processes: a NEW workflow is rejected unless it has more than 30
+        steps, more than 20 conditional nodes, or needs a playbook-unsupported step (image
+        message, language selector, OAuth, integration, custom action, pause, AI task).
+        Use create_playbook otherwise. Editing an existing canvas workflow is always allowed.
+        Nothing is saved if validation fails.
 
         Args:
             app_id: The agent / app ID.
-            workflow_id: The workflow / journey ID.
-            stm_definition: The stmDefinition object (startAt + states).
-            metadata: ReactFlow visual metadata (nodes + edges). Pass {} if not available.
+            name: Workflow display name (e.g. "Loan application").
+            description: When the agent should run it (also the agent tool description).
+            intermediate: {"stmDefinition": {...}, "slots": {...}} per botcircuits://workflow-schema.
+            workflow_id: Existing workflow id to replace (optional).
+            expose_as_agent_tool: Also register a type=workflow agent tool. Ask the user first.
         """
-        return await client.save_journey_definition(
-            app_id,
-            workflow_id,
-            stm_definition,
-            metadata or {"nodes": [], "edges": []},
-        )
+        existing_slots: dict[str, Any] = {}
+        converting = False
+        if workflow_id:
+            journey = await client.get_journey(app_id, workflow_id)
+            existing_slots = journey.get("slots") or {}
+            converting = journeys.is_playbook(journey)
 
-    @mcp.tool()
-    async def save_workflow_slots(
-        app_id: str,
-        workflow_id: str,
-        slots: dict,
-    ) -> dict:
-        """
-        Upload slot definitions for a workflow.
+        result = await check_workflow(app_id, intermediate, existing_slots)
+        if result["errors"]:
+            return {"ok": False, "saved": False, "errors": result["errors"], "warnings": result["warnings"]}
+        complexity = result["complexity"]
+        if (not workflow_id or converting) and not complexity.exceeds_playbook:
+            return {"ok": False, "saved": False, "policy": "use_playbook",
+                    "error": (f"This process has {complexity.steps} steps and {complexity.conditional_nodes} "
+                              "conditional nodes and no playbook-unsupported steps. Build it with "
+                              f"create_playbook; canvas workflows are for > {WORKFLOW_MIN_STEPS} steps or > "
+                              f"{WORKFLOW_MIN_CONDITIONS} conditional nodes."),
+                    "complexity": complexity.as_dict()}
 
-        Slots are the variables collected during workflow execution. Each slot
-        has a name (key), dataType, and content that guides extraction/validation.
+        platform = result["platform"]
+        new_id = await journeys.upsert_action(app_id, workflow_id, name, description, "workflow")
+        await client.ensure_journey(app_id, new_id)
+        slots = journeys.merge_slots(existing_slots, platform["slots"], result["auto"])
+        await client.save_journey_slots(app_id, new_id, slots)
+        await client.save_journey_definition(app_id, new_id, platform["stm"]["stmDefinition"],
+                                             platform["stm"]["metadata"])
+        exposure: dict = {"registered": False}
+        if expose_as_agent_tool:
+            action = await journeys.find_action(app_id, new_id)
+            exposure = await journeys.expose_as_agent_tool(app_id, new_id, action.get("name") or name,
+                                                           action.get("description") or description, "workflow")
+        if converting:
+            try:
+                await client.delete_prompt(app_id, "tools", f"playbook-{new_id}")
+            except RuntimeError:
+                pass  # no playbook-managed tool
+        return {"ok": True, "workflowId": new_id, "authoringMode": "workflow", "created": not workflow_id,
+                "state_count": len(platform["stm"]["stmDefinition"]["states"]), "slot_count": len(slots),
+                "warnings": result["warnings"], "complexity": complexity.as_dict(), "agentTool": exposure}
 
-        Slot dataType reference:
-          custom   — AI entity extraction; content = description of what to extract
-          regex    — Regex validation; content = pattern (e.g. "^ORD-\\d{6}$")
-          values   — Allowed values; content = comma-separated list
-          number   — Numeric; content = optional "min-max" range hint
-          boolean  — Yes/no
-          email    — Email address
-          age      — Age value
-          date     — Date; content = optional format hint (e.g. "YYYY-MM-DD")
-          datetime — Date+time
-          any      — Unvalidated free text
-
-        Example slots argument:
-        {
-          "customer_name": {
-            "slot": "customer_name",
-            "displayText": "Customer Name",
-            "captureFromUserInput": true,
-            "dataType": "custom",
-            "content": "The customer's full name",
-            "dependencies": []
-          },
-          "issue_type": {
-            "slot": "issue_type",
-            "captureFromUserInput": true,
-            "dataType": "values",
-            "content": "billing,technical,general",
-            "dependencies": []
-          }
-        }
-
-        Args:
-            app_id: The agent / app ID.
-            workflow_id: The workflow / journey ID.
-            slots: Dict of slot name → slot definition object.
-        """
-        return await client.save_journey_slots(app_id, workflow_id, slots)
-
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
     async def delete_workflow(app_id: str, workflow_id: str) -> dict:
         """
-        Delete a workflow and all its state machine / slot definitions.
+        Delete a workflow (or playbook): its action, journey and the agent tools that start it.
+        Only when the user asked for it.
 
         Args:
             app_id: The agent / app ID.
-            workflow_id: The workflow / journey ID to delete.
+            workflow_id: The workflow id.
         """
-        return await client.delete_journey(app_id, workflow_id)
+        return await delete_journey_and_tools(app_id, workflow_id)

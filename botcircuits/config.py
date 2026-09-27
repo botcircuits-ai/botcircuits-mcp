@@ -1,4 +1,4 @@
-from typing import Optional
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,7 +14,7 @@ class Settings(BaseSettings):
         default="",
         description="Bearer access token (Cognito JWT or API key)",
     )
-    default_app_id: Optional[str] = Field(
+    default_app_id: str | None = Field(
         default=None,
         description="Default appId used when none is supplied to a tool",
     )

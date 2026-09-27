@@ -1,164 +1,121 @@
 """
-MCP operations for BotCircuits Skills.
+MCP tools for BotCircuits Skills (REST /apps/{appId}/prompt-config/skills).
 
-A Skill is a capability registered on an agent that the agent's LLM can invoke
-during conversations. The platform UI labels these "Skills". The underlying
-REST path is /apps/{appId}/prompt-config/tools — this module uses the "skill"
-term exclusively.
+A skill is on-demand instructions: the runtime model sees only its name and description,
+and loads the body when the situation matches. Use skills for flexible procedures that
+orchestrate existing tools; use a playbook when steps must be enforced in order.
 
-Skill types
------------
-workflow  Triggers a deterministic BotCircuits workflow (state machine). The LLM
-          routes to this skill when it detects matching user intent. toolData must
-          include { "workflowId": "<workflow_id>" }.
+  name                    lowercase slug, exposed to the model as skill_<name>
+  description             when to use it — the model's only trigger signal
+  body                    markdown procedure; {slot} placeholders are filled from the conversation
+  allowedTools            runtime tool names the skill uses (guidance, not a permission boundary)
+  disableModelInvocation  hide from the model (drafts, workflow-only skills)
 
-function  Calls an external Lambda (codehook) or HTTP webhook. toolData holds the
-          codehook/webhook configuration.
-
-kb        Queries a knowledge base (RAG). The LLM provides a search query and the
-          retrieved answer is returned as context. toolData holds KB identifiers.
-
-json      Returns a static or templated JSON payload. Useful for injecting
-          structured data into the conversation without a live API call.
-
-Parameters
-----------
-Each skill can declare input parameters (except workflow and kb types).
-Parameters are a dict keyed by parameter name:
-  {
-    "order_id": { "type": "string", "description": "The order ID", "required": true },
-    "limit":    { "type": "number", "description": "Max results",  "required": false }
-  }
-Valid types: string · number · boolean · array · object
+(Earlier versions of this server used "skill" for agent tools; those are now *_agent_tool.)
 """
 
-from typing import Any, Literal, Optional
+import re
+from typing import Any
+
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+
 from .. import client
+
+_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_FIELDS = ("name", "description", "body", "allowedTools", "disableModelInvocation", "deactivate")
+
+
+async def _validate(app_id: str, record: dict, exclude_id: str | None = None) -> dict:
+    if not _NAME.match(record.get("name") or ""):
+        raise ValueError("skill name must be a lowercase slug: ^[a-z0-9][a-z0-9-]{0,63}$ (e.g. process-refund)")
+    if len((record.get("description") or "").strip()) < 10:
+        raise ValueError("description must say when to use the skill")
+    if len((record.get("body") or "").strip()) < 20:
+        raise ValueError("body must contain the procedure")
+    for other in await client.list_prompt(app_id, "skills"):
+        if other.get("name") == record["name"] and other.get("id") != exclude_id:
+            raise ValueError(f"a skill named '{record['name']}' already exists (id {other.get('id')})")
+    record.setdefault("allowedTools", [])
+    record.setdefault("disableModelInvocation", False)
+    return record
 
 
 def register(mcp: FastMCP) -> None:
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def list_skills(app_id: str) -> list:
         """
-        List all skills registered on an agent.
-
-        Returns every skill regardless of type (workflow, function, kb, json).
+        List the agent's skills (id, name, description, allowedTools).
 
         Args:
             app_id: The agent / app ID.
         """
-        return await client.list_skills(app_id)
+        return [{k: s.get(k) for k in ("id", "name", "description", "allowedTools", "disableModelInvocation",
+                                        "deactivate")} for s in await client.list_prompt(app_id, "skills")]
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def get_skill(app_id: str, skill_id: str) -> dict:
         """
-        Get the full configuration of a specific skill.
+        Get one skill including its body.
 
         Args:
-            app_id:   The agent / app ID.
-            skill_id: The skill ID.
+            app_id: The agent / app ID.
+            skill_id: The skill id.
         """
-        return await client.get_skill(app_id, skill_id)
+        return await client.get_prompt(app_id, "skills", skill_id)
 
     @mcp.tool()
     async def create_skill(
         app_id: str,
         name: str,
         description: str,
-        skill_type: Literal["workflow", "function", "kb", "json"],
-        parameters: Optional[dict[str, Any]] = None,
-        skill_data: Optional[dict[str, Any]] = None,
+        body: str,
+        allowed_tools: list[str] | None = None,
+        disable_model_invocation: bool = False,
     ) -> dict:
         """
-        Create a new skill on an agent.
+        Create a skill: instructions the runtime model loads when relevant.
 
-        The skill's name and description are what the agent LLM reads at runtime
-        to decide when to invoke it — write them as clear, specific instructions.
-
-        Skill types:
-          workflow  Triggers a BotCircuits workflow (journey).
-                    skill_data: { "workflowId": "<workflow_id>" }
-
-          function  Calls a Lambda (codehook) or HTTP webhook.
-                    skill_data: codehook/webhook configuration dict.
-
-          kb        Queries a knowledge base via RAG search.
-                    skill_data: knowledge base identifiers.
-
-          json      Returns a static JSON payload.
-                    skill_data: the JSON payload to return.
-
-        Parameters are ignored for workflow and kb types.
-
-        Example parameters dict:
-          {
-            "order_id": { "type": "string",  "description": "Order ID to look up", "required": true },
-            "format":   { "type": "string",  "description": "Response format",     "required": false }
-          }
+        Write the body as: goal, inputs to gather, numbered steps naming exact runtime tool
+        names (MCP tools as <server>__<tool>), failure handling, and what "done" looks like.
+        Skills cannot run code.
 
         Args:
-            app_id:      The agent / app ID.
-            name:        Skill identifier in snake_case (e.g. "get_order_status").
-            description: Natural-language description of what this skill does and
-                         when the agent should call it.
-            skill_type:  One of: workflow · function · kb · json
-            parameters:  Dict of parameter definitions (optional).
-            skill_data:  Type-specific configuration (optional).
+            app_id: The agent / app ID.
+            name: Lowercase slug, e.g. process-refund.
+            description: When to use it, e.g. "Use when a customer asks for money back on a delivered order".
+            body: Markdown procedure.
+            allowed_tools: Runtime tool names the skill uses.
+            disable_model_invocation: Hide from the model.
         """
-        payload: dict[str, Any] = {
-            "name": name,
-            "type": skill_type,
-            "description": description,
-            "parameters": parameters or {},
-            "toolData": skill_data or {},
-        }
-        return await client.create_skill(app_id, payload)
+        record = await _validate(app_id, {"name": name, "description": description, "body": body,
+                                          "allowedTools": allowed_tools or [],
+                                          "disableModelInvocation": disable_model_invocation})
+        result = await client.create_prompt(app_id, "skills", record)
+        return {**result, "runtimeName": f"skill_{name}"}
 
     @mcp.tool()
-    async def update_skill(
-        app_id: str,
-        skill_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        skill_type: Optional[Literal["workflow", "function", "kb", "json"]] = None,
-        parameters: Optional[dict[str, Any]] = None,
-        skill_data: Optional[dict[str, Any]] = None,
-    ) -> dict:
+    async def update_skill(app_id: str, skill_id: str, changes: dict[str, Any]) -> dict:
         """
-        Update an existing skill.
-
-        Fetches the current skill first and merges only the fields you supply,
-        so omitted fields are preserved as-is.
+        Update a skill; fields not in `changes` are preserved.
 
         Args:
-            app_id:      The agent / app ID.
-            skill_id:    The skill ID to update.
-            name:        New skill name (optional).
-            description: New description (optional).
-            skill_type:  New type (optional).
-            parameters:  New parameters dict — replaces the entire parameters
-                         object when supplied (optional).
-            skill_data:  New type-specific configuration (optional).
+            app_id: The agent / app ID.
+            skill_id: The skill id.
+            changes: Any of name, description, body, allowedTools, disableModelInvocation, deactivate.
         """
-        current = await client.get_skill(app_id, skill_id)
-        payload: dict[str, Any] = {
-            "name":        name        if name        is not None else current.get("name", ""),
-            "type":        skill_type  if skill_type  is not None else current.get("type", ""),
-            "description": description if description is not None else current.get("description", ""),
-            "parameters":  parameters  if parameters  is not None else current.get("parameters", {}),
-            "toolData":    skill_data  if skill_data  is not None else current.get("toolData", {}),
-        }
-        return await client.update_skill(app_id, skill_id, payload)
+        current = await client.get_prompt(app_id, "skills", skill_id)
+        record = {k: v for k, v in {**current, **changes}.items() if k in _FIELDS}
+        return await client.update_prompt(app_id, "skills", skill_id, await _validate(app_id, record, skill_id))
 
-    @mcp.tool()
+    @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
     async def delete_skill(app_id: str, skill_id: str) -> dict:
         """
-        Delete a skill from an agent.
+        Delete a skill. Only when the user asked for it.
 
         Args:
-            app_id:   The agent / app ID.
-            skill_id: The skill ID to delete.
+            app_id: The agent / app ID.
+            skill_id: The skill id.
         """
-        return await client.delete_skill(app_id, skill_id)
+        return await client.delete_prompt(app_id, "skills", skill_id)
