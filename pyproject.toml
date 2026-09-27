@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "botcircuits-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server for BotCircuits — build agents: tools, skills, MCP servers, sub-agents, knowledge, playbooks and workflows"
 requires-python = ">=3.11"
 dependencies = [

@@ -89,8 +89,22 @@ def _app(app_id: str) -> str:
 # ---------------------------------------------------------------------------
 # Apps
 # ---------------------------------------------------------------------------
-async def create_app(name: str, **kwargs: Any) -> dict:
-    return await _request("POST", "/apps", {"name": name, **kwargs})
+APP_MODE_PROMPT_BASED = "prompt_based"
+
+
+async def create_app(name: str, description: str = "") -> dict:
+    """Create an app exactly as the console's create dialog does.
+
+    appMode is always prompt_based: every capability this server builds (agent tools,
+    skills, MCP servers, playbooks exposed as tools) runs in the prompt-based agent loop.
+    """
+    result = _unwrap(await _request("POST", "/apps", {
+        "name": name,
+        "description": description,
+        "appMode": APP_MODE_PROMPT_BASED,
+        "intentLess": True,
+    }))
+    return result if isinstance(result, dict) else {}
 
 
 async def list_apps(plugin_type: str | None = None) -> Any:

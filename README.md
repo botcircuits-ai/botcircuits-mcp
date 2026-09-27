@@ -24,12 +24,14 @@ pip install -e .
 **Or install directly via pip + git:**
 
 ```bash
-pip install git+https://github.com/botcircuits/botcircuits-mcp.git
+pip install git+https://github.com/botcircuits-ai/botcircuits-mcp.git
 ```
 
 ### 2. Get your BotCircuits access token
 
-BotCircuits dashboard → **Settings → Access Keys** → copy the token.
+BotCircuits dashboard → **Account → Access Keys** → copy the token.
+
+https://platform.botcircuits.com/account/access-keys
 
 ### 3. Add to your AI tool
 
@@ -58,7 +60,8 @@ Restart your AI agent tool.
 
 ### 4. Build with plain English
 
-Tell your AI assistant (use an existing app id — creating apps is done in the console):
+Tell your AI assistant. If you don't name an app, it asks whether to create a new one or use an existing one
+(new apps are always prompt-based agents; creating one needs an account-level access key):
 
 ```
 In app <appId>: customers should be able to check an order's status. The order API is
@@ -140,7 +143,7 @@ Playbooks and workflows are validated against the runtime's rules before anythin
 
 | Group | Tools |
 |---|---|
-| Applications (10) | `list_applications`, `get_application`, `get_application_overview`, `get_application_core_settings`, `update_application_core_settings`, `get_agent_instructions`, `update_agent_instructions`, `create_application`\*, `delete_application`\*, `publish_application`\* |
+| Applications (10) | `list_applications`, `get_application`, `get_application_overview`, `get_application_core_settings`, `update_application_core_settings`, `get_agent_instructions`, `update_agent_instructions`, `create_application`, `delete_application`\*, `publish_application`\* |
 | Design (2) | `recommend_implementation`, `get_authoring_guide` |
 | Playbooks (6) | `list_playbooks`, `get_playbook`, `validate_playbook`, `create_playbook`, `update_playbook`, `delete_playbook` |
 | Workflows (5) | `list_workflows`, `get_workflow`, `validate_workflow_definition`, `upload_workflow`, `delete_workflow` |

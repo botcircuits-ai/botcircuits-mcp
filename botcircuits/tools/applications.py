@@ -79,15 +79,43 @@ def register(mcp: FastMCP) -> None:
         }
 
     @mcp.tool()
-    async def create_application(name: str, description: str | None = None) -> str:
+    async def create_application(name: str, description: str = "", allow_duplicate_name: bool = False) -> dict:
         """
-        Create a new BotCircuits application. Not available through MCP yet.
+        Create a new BotCircuits application (agent). Always created as a prompt-based agent.
+
+        Only call this after the user chose to create a NEW application (see "Choosing the
+        application" in the server instructions) and confirmed the name. Never retry blindly:
+        if the call fails or times out, call list_applications first — it may have been created.
 
         Args:
-            name: Application name.
-            description: Short description.
+            name: Application name, e.g. "Acme Support".
+            description: One sentence on what the agent is for.
+            allow_duplicate_name: Create even if an application with this name exists (only when the user says so).
         """
-        return f"Creating applications through MCP is not allowed yet. Please use {_CONSOLE}"
+        name = name.strip()
+        if not name or len(name) > 120:
+            raise ValueError("name must be 1-120 characters")
+        existing = await client.list_apps()
+        apps = existing if isinstance(existing, list) else client._as_list(existing)
+        same = [a for a in apps if str(a.get("name", "")).strip().lower() == name.lower()]
+        if same and not allow_duplicate_name:
+            return {"created": False,
+                    "error": f"An application named '{name}' already exists (appId {same[0].get('appId')}). "
+                             "Ask the user whether to use it or create another with a different name."}
+        try:
+            result = await client.create_app(name, description.strip())
+        except RuntimeError as exc:
+            if "error 401" in str(exc) or "error 403" in str(exc):
+                raise RuntimeError("The access token cannot create applications. Creating an app needs an "
+                                   "account-level access key (not an app key). Create one in the console under "
+                                   f"Settings → Access Keys ({_CONSOLE}), or create the app in the console.") from exc
+            raise
+        app_id = result.get("appId")
+        if not app_id:
+            raise RuntimeError("The API did not return an appId; call list_applications before retrying.")
+        return {"created": True, "appId": app_id, "name": name, "appMode": client.APP_MODE_PROMPT_BASED,
+                "next": "Default settings and the runtime access key are provisioned in the background "
+                        "(a few seconds). Use this appId for every following call."}
 
     @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
     async def delete_application(app_id: str) -> str:

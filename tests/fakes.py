@@ -32,6 +32,8 @@ class FakeBotCircuits:
         self.calls: list[tuple[str, str]] = []
         self.journey_delay_polls = journey_delay_polls
         self.valid_token = "key_valid_token"
+        self.created_apps: list[dict] = []
+        self.can_create_apps = True
 
     # ------------------------------------------------------------------ transport
     def transport(self) -> httpx.MockTransport:
@@ -46,6 +48,8 @@ class FakeBotCircuits:
         path = request.url.path
         self.calls.append((request.method, path))
         body = json.loads(request.content) if request.content else {}
+        if path == "/apps":
+            return self.route_apps(request.method, body)
         prefix = f"/apps/{self.app_id}"
         if not path.startswith(prefix):
             return httpx.Response(403, json={"message": "no access to app"})
@@ -178,6 +182,15 @@ class FakeBotCircuits:
             return missing
 
         return httpx.Response(404, json={"message": f"no fake route {method} {path}"})
+
+    def route_apps(self, method: str, body: dict) -> httpx.Response:
+        if method == "GET":
+            return httpx.Response(200, json=[self.app, *self.created_apps])
+        if not self.can_create_apps:
+            return httpx.Response(403, json={"message": "Unauthorized"})
+        app = {**body, "appId": f"app-{len(self.created_apps) + 2}"}
+        self.created_apps.append(app)
+        return httpx.Response(201, json={"appId": app["appId"], "name": body.get("name")})
 
     def _masked(self, kind: str, item: dict) -> dict:
         if kind != "mcp-servers":
