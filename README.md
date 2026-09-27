@@ -16,7 +16,7 @@ build and manage agents, sub-agents, and workflows through natural language.
 **From GitHub (recommended):**
 
 ```bash
-git clone https://github.com/botcircuits/bc-mcp-server.git
+git clone https://github.com/botcircuits-ai/botcircuits-mcp.git
 cd bc-mcp-server
 pip install -e .
 ```
@@ -24,7 +24,7 @@ pip install -e .
 **Or install directly via pip + git:**
 
 ```bash
-pip install git+https://github.com/botcircuits/bc-mcp-server.git
+pip install git+https://github.com/botcircuits/botcircuits-mcp.git
 ```
 
 ### 2. Get your BotCircuits access token
