@@ -64,15 +64,11 @@ Tell your AI assistant. If you don't name an app, it asks whether to create a ne
 (new apps are always prompt-based agents; creating one needs an account-level access key):
 
 ```
-In app <appId>: customers should be able to check an order's status. The order API is
-GET https://api.example.com/orders/{order_id} with header X-Api-Key (I'll give you the key).
-Also handle returns: ask for the order number and the reason, check eligibility with the
-same API, then either confirm the return or hand off to a human.
-```
+create botcircuits agent.
 
-The assistant follows the server's construct policy: the order lookup becomes an API tool
-(`create_api_tool`), the returns process becomes a playbook (`create_playbook`) that calls the
-same codehook, and the global instructions are updated to say when to use each.
+usecase:
+Help a customer report a lost or stolen bank card. Ask whether the card is lost or stolen and whether they noticed any unrecognized transactions. Do not ask for the full card number, PIN, password, or security code. Summarize their answers and hand off to a banking specialist. If they report unrecognized transactions, include that concern in the handoff. Do not claim that the card has been blocked or replaced
+```
 
 ### 5. Iterate
 
@@ -81,7 +77,6 @@ Add a live agent handoff if the customer is unhappy.
 Ask for the email address before confirming the return.
 ```
 
-The assistant reads the playbook (`get_playbook`), edits it and saves it (`update_playbook`).
 
 ---
 
@@ -109,7 +104,7 @@ You → Claude Code → "customers should be able to return an order"
 | `botcircuits://…` resources | On demand, clients that read resources | Same five guides |
 | `design_playbook` prompt | User-invoked (e.g. a slash command) | Step-by-step: overview → inputs → resources → variables → steps → validate → confirm → save |
 
-### Playbooks that work, not just playbooks that save
+### Playbooks that work
 
 - **Design method** in the instructions: how a playbook actually runs (steps continue through
   messages until an ASK pauses; answered ASKs are skipped; failed calls leave variables empty),
@@ -134,7 +129,7 @@ Delivered to the host AI on connect and enforced by the save tools:
 | Tone, scope, rules | **Instructions** | `update_agent_instructions` |
 | Know-how applied flexibly with existing tools | **Skill** | `create_skill` |
 | Ordered multi-step process, questions across turns, branching | **Playbook** (default) | `create_playbook` |
-| More than **30 steps**, more than **20 conditional nodes**, or a step playbooks can't express (image, language selector, OAuth, integration, custom action, pause, AI task) | **Canvas workflow** | `upload_workflow` |
+| More than **30 steps**, more than **20 conditional nodes** | **Canvas workflow** | `upload_workflow` |
 
 `upload_workflow` rejects a *new* workflow below those thresholds and points to `create_playbook`.
 Playbooks and workflows are validated against the runtime's rules before anything is saved.
@@ -160,19 +155,6 @@ Resources: `botcircuits://capability-guide`, `botcircuits://playbook-design`, `b
 `botcircuits://playbook-examples`, `botcircuits://workflow-schema`
 (also available through `get_authoring_guide` for clients that don't read resources).
 
-### Changes from 0.1
-
-| Before | Now | Why |
-|---|---|---|
-| `list_skills` … `delete_skill` on `/prompt-config/tools` | `*_agent_tool` | The console renamed these to **Tools**; `*_skill` now manages real **Skills** (`/prompt-config/skills`) |
-| `save_workflow_stm`, `save_workflow_slots`, `convert_intermediate_to_platform` | removed | Bypassed validation and the construct policy; `upload_workflow` / `validate_workflow_definition` cover them |
-| `update_application_core_settings` sent `authConfig: {}` | merges with stored settings | It wiped the stored auth config |
-| `upload_workflow` | validates, enforces the policy, waits for journey provisioning | It could save broken definitions and fail with "journey not found" |
-| Canvas edges used block ids for choice handles | state ids | Branches broke when the workflow was re-saved in the console |
-| Id remapping rewrote any string equal to a state id | only edge fields | A button payload like `billing` became a numeric id |
-| Cards slot `bc_workflow_option` | `workflow_option` | The runtime slot name (legacy value is rewritten) |
-| `delete_workflow` deleted only the journey | deletes the action, journey and agent tools | Left orphan records and tools |
-
 ## Project structure
 
 ```
@@ -192,9 +174,6 @@ bc-mcp-server/
 │   └── tools/               MCP tools, one module per resource
 └── tests/                   Fake BotCircuits API + tool tests
 ```
-
-The `workflow/` modules are shared with `botcircuits-agent-builder-copilot`; keep them in sync.
-
 
 ## Setup (development)
 
