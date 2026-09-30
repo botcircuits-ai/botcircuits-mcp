@@ -151,7 +151,8 @@ def register(mcp: FastMCP) -> None:
         Create or update a codehook with custom code (logic an API spec cannot express).
 
         The handler receives {context: {appId, sessionId, inputText, ...}, slots: {...tool
-        arguments or playbook/workflow variables}, defaultInput}. Return {slots: {...}} to set
+        arguments or playbook/workflow variables}, defaultInput: <parsed static JSON configured on the
+        function tool's toolData.defaultInput or the step's defaultInput>}. Return {slots: {...}} to set
         workflow variables; a {type, content} message ends the workflow turn. Read secrets from
         process.env / os.environ — never hardcode them. Then use it from a function tool
         (create_agent_tool) or a playbook RUN FUNCTION step.

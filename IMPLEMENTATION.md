@@ -103,7 +103,9 @@ deletes the action (which removes the journey) and every agent tool that starts 
 body template with `{param}` / `{env.NAME}` placeholders, result path, slot mapping),
 deploys it (config → presigned upload → deploy) and registers a `type=function` agent
 tool. The same codehook works as a playbook RUN FUNCTION step: both callers pass
-`{context, slots, defaultInput}`. Secrets live in codehook environment variables.
+`{context, slots, defaultInput}` — a function tool sets it via `toolData.defaultInput` (JSON
+text, validated and encoded by `create_agent_tool` / `update_agent_tool` / sub-agent capabilities).
+Secrets live in codehook environment variables.
 
 ## 6. Tests
 

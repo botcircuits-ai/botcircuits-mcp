@@ -8,7 +8,7 @@ Stored as an agent tool with type "sub_agent" (REST /prompt-config/tools):
   toolData.instructions  system prompt of the sub-agent
   toolData.tools         inline capabilities keyed by name:
       {"lookup_order": {"type": "function", "description": "...", "parameters": {...},
-                        "toolData": {"functionId": "<codehookId>"}}}
+                        "toolData": {"functionId": "<codehookId>", "defaultInput": "<JSON string>"}}}
 Capability types: function · kb · workflow · json (no nested sub_agent).
 """
 
@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from .. import client
+from .agent_tools import normalize_default_input
 
 _TYPE = "sub_agent"
 _CAPABILITY_TYPES = {"function", "kb", "workflow", "json"}
@@ -39,6 +40,7 @@ async def _validate(app_id: str, record: dict, exclude_id: str | None = None) ->
             hooks = hooks if hooks is not None else {c.get("codehookId") for c in await client.list_codehooks(app_id)}
             if cap_data.get("functionId") not in hooks:
                 raise ValueError(f"capability '{cap_name}': toolData.functionId must be an existing codehook")
+            cap["toolData"] = normalize_default_input(dict(cap_data), f"capability '{cap_name}': toolData")
         if cap["type"] == "workflow":
             workflows = workflows if workflows is not None else {a.get("id") for a in await client.list_actions(app_id)}
             if cap_data.get("workflowId") not in workflows:

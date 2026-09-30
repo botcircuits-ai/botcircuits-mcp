@@ -1,5 +1,7 @@
 """MCP tools against an in-memory BotCircuits API (tests/fakes.py)."""
 
+import json
+
 import pytest
 
 from botcircuits import client
@@ -182,6 +184,21 @@ async def test_agent_tools_skills_and_mcp_servers(fake):
                         authorization_token="secret-123")
     await call("update_mcp_server", app_id="app1", server_id=server["id"], changes={"allowedTools": ["a"]})
     assert fake.collections["mcp-servers"][server["id"]]["authorizationToken"] == "secret-123"
+
+
+async def test_function_tool_default_input(fake):
+    fake.codehooks["api_get_order"] = {"codehookId": "api_get_order"}
+    created = await call("create_agent_tool", app_id="app1", name="get_order", description="Look up an order.",
+                         tool_type="function",
+                         tool_data={"functionId": "api_get_order", "defaultInput": {"region": "eu"}})
+    stored = fake.collections["tools"][created["id"]]
+    assert json.loads(stored["toolData"]["defaultInput"]) == {"region": "eu"}
+    with pytest.raises(ValueError, match="valid JSON"):
+        await call("update_agent_tool", app_id="app1", tool_id=created["id"],
+                   changes={"toolData": {"functionId": "api_get_order", "defaultInput": "{region: eu}"}})
+    await call("update_agent_tool", app_id="app1", tool_id=created["id"],
+               changes={"toolData": {"functionId": "api_get_order", "defaultInput": ""}})
+    assert "defaultInput" not in fake.collections["tools"][created["id"]]["toolData"]
 
 
 async def test_create_api_tool(fake):

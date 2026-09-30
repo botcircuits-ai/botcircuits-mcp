@@ -5,16 +5,21 @@ Earlier versions of this server called these "skills". The console renamed them 
 and added real Skills (see skills.py), so the names now match the product.
 
 Types and toolData:
-  function   runs a codehook with the model's arguments     {"functionId": "<codehookId>", "returnOriginal": false}
+  function   runs a codehook with the model's arguments     {"functionId": "<codehookId>", "returnOriginal": false,
+                                                              "defaultInput": "<JSON-encoded string>"}
   kb         searches knowledge sources                      {"filterKb": ["<dataSourceId>"], "topK": 5}
   workflow   starts a playbook / workflow                    {"workflowId": "<id>"}
   json       returns fixed data                              {"json": "<JSON-encoded string>"}
   sub_agent  managed by the sub-agent tools (sub_agents.py)
 
+A function tool's optional defaultInput is static data the author configures; the runtime sends
+it to the codehook as `defaultInput` next to the model-filled `slots` (same as a workflow step).
+
 Parameters are a map, not JSON Schema:
   {"order_id": {"type": "string", "description": "Order ID", "required": true}}
 """
 
+import json
 import re
 from typing import Any, Literal
 
@@ -28,6 +33,27 @@ ToolType = Literal["function", "kb", "workflow", "json"]
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 _PARAM_TYPES = {"string", "number", "integer", "boolean", "array", "object"}
 _SERVER_FIELDS = ("id", "pk", "sk", "appId", "createdAt", "modifiedAt")
+
+
+def normalize_default_input(data: dict, label: str = "toolData") -> dict:
+    """Store a function tool's defaultInput as the JSON text the console editor holds.
+
+    Objects/arrays are encoded; strings must already be valid JSON; empty values are dropped.
+    """
+    value = data.get("defaultInput")
+    if value is None or (isinstance(value, str) and not value.strip()):
+        data.pop("defaultInput", None)
+        return data
+    if isinstance(value, (dict, list)):
+        data["defaultInput"] = json.dumps(value)
+    elif isinstance(value, str):
+        try:
+            json.loads(value)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"{label}.defaultInput must be valid JSON: {e}") from None
+    else:
+        raise ValueError(f"{label}.defaultInput must be a JSON object or a JSON-encoded string")
+    return data
 
 
 async def validate_tool(app_id: str, record: dict, exclude_id: str | None = None) -> dict:
@@ -46,6 +72,7 @@ async def validate_tool(app_id: str, record: dict, exclude_id: str | None = None
         hooks = {c.get("codehookId") for c in await client.list_codehooks(app_id)}
         if data.get("functionId") not in hooks:
             raise ValueError(f"toolData.functionId must be an existing codehook id; available: {sorted(filter(None, hooks))}")
+        normalize_default_input(data)
     elif tool_type == "workflow":
         ids = {a.get("id") for a in await client.list_actions(app_id) if a.get("actionType") == "workflow"}
         if data.get("workflowId") not in ids:
@@ -121,7 +148,8 @@ def register(mcp: FastMCP) -> None:
             name: snake_case runtime name, e.g. get_order_status.
             description: What it does, when to use it, what it returns.
             tool_type: function · kb · workflow · json
-            tool_data: function {"functionId"} · kb {"filterKb", "topK"} · workflow {"workflowId"} · json {"json": "<string>"}
+            tool_data: function {"functionId", "defaultInput"?: {...} static data sent to the codehook as
+                `defaultInput` beside the model's arguments (`slots`), "returnOriginal"?: bool} · kb {"filterKb", "topK"} · workflow {"workflowId"} · json {"json": "<string>"}
             parameters: {"arg": {"type", "description", "required"}} (ignored for workflow/json; kb gets `query`).
         """
         existing_id = None
