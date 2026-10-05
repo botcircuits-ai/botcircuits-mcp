@@ -27,7 +27,7 @@ User ─► Host AI ─► tools/call ─► botcircuits-mcp ─► BotCircuits 
 botcircuits/
   config.py        BOTCIRCUITS_API_BASE_URL, BOTCIRCUITS_ACCESS_TOKEN, BOTCIRCUITS_DEFAULT_APP_ID
   client.py        one _request helper + every endpoint (routes from botcircuits-platform/src/services)
-  guides.py        CAPABILITY_GUIDE, PLAYBOOK_SCHEMA, WORKFLOW_SCHEMA
+  guides.py        CAPABILITY_GUIDE, PLAYBOOK_SCHEMA, PLAYBOOK_DESIGN, WORKFLOW_SCHEMA, TROUBLESHOOTING
   server.py        FastMCP: instructions, 3 resources, get_authoring_guide
   workflow/        pure logic, shared with botcircuits-agent-builder-copilot
     constants.py   stmDefinition vocabulary (as the runtime implements it)
@@ -62,8 +62,9 @@ tests/
 | `/prompt-config/mcp-servers` | MCP | `*_mcp_server` |
 | `/prompt-config/instructions` | Instructions | `get/update_agent_instructions` |
 | `/agent/actions` + `/model/journey/{id}` | Playbooks / Workflows | `*_playbook`, `*_workflow` |
-| `/model/codehooks` | Functions | `list_codehooks`, `deploy_codehook`, `create_api_tool` |
+| `/model/codehooks` | Functions | `list_codehooks`, `get_codehook`, `deploy_codehook`, `create_api_tool` |
 | `/knowledge/data-sources` | Knowledge | `list_knowledge_sources`, `add_*_knowledge` |
+| `/traces/sessions[/{id}/summary, /{id}/turns/{messageId}]` | (runtime traces, read-only) | `find_problem_sessions`, `get_session_trace`, `get_turn_trace` |
 
 ## 4. Playbooks and workflows
 

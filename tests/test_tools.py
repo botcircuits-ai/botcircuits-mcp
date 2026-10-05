@@ -217,6 +217,42 @@ async def test_create_api_tool(fake):
                    parameters={})
 
 
+async def test_deploy_codehook_waits_for_archive_and_retries_while_lambda_is_pending(fake, monkeypatch):
+    from botcircuits.tools import codehooks
+    sleeps = []
+
+    async def no_sleep(seconds):
+        sleeps.append(seconds)
+    monkeypatch.setattr(codehooks.asyncio, "sleep", no_sleep)
+    fake.deploy_conflicts = 2
+    result = await call("deploy_codehook", app_id="app1", codehook_id="calc_total",
+                        source="exports.handler = async () => ({});")
+    assert result["runtime"] == "nodejs22.x" and fake.codehooks["calc_total"]["status"] == "deployed"
+    assert sleeps == [5, 5]
+    fake.deploy_conflicts = 9
+    with pytest.raises(client.ApiError, match="500"):
+        await call("deploy_codehook", app_id="app1", codehook_id="calc_total",
+                   source="exports.handler = async () => ({});")
+
+
+async def test_deploy_codehook_falls_back_when_platform_rejects_runtime(fake):
+    fake.codehook_runtimes = {"nodejs18.x", "python3.10"}
+    result = await call("deploy_codehook", app_id="app1", codehook_id="calc_old",
+                        source="exports.handler = async () => ({});")
+    assert result["runtime"] == "nodejs18.x" and fake.codehooks["calc_old"]["runtime"] == "nodejs18.x"
+    result = await call("deploy_codehook", app_id="app1", codehook_id="calc_py", runtime="python3.13",
+                        source="def handler(event, context):\n    return {}")
+    assert result["runtime"] == "python3.10"
+
+
+async def test_get_codehook_hides_environment_values(fake):
+    await call("deploy_codehook", app_id="app1", codehook_id="calc_total", environment={"API_KEY": "secret"},
+               source="exports.handler = async () => ({});")
+    hook = await call("get_codehook", app_id="app1", codehook_id="calc_total")
+    assert hook["environmentVariables"] == ["API_KEY"] and hook["runtime"] == "nodejs22.x"
+    assert "secret" not in json.dumps(hook)
+
+
 def test_policy_thresholds_are_30_steps_and_20_conditions():
     base = dict(summary="x", multi_turn_input=True, must_follow_fixed_order=True, single_action=False,
                 guidance_only=False)
@@ -231,3 +267,7 @@ async def test_guides_are_served():
     guide = await call("get_authoring_guide", topic="workflow")
     assert "workflow_option" in guide and "bc_workflow_option" not in guide
     assert "more than\n   30 steps" in mcp.instructions or "30 steps" in mcp.instructions
+    troubleshooting = await call("get_authoring_guide", topic="troubleshooting")
+    assert "find_problem_sessions" in troubleshooting and "stuck_on_slot" in troubleshooting
+    assert "get_authoring_guide(\"troubleshooting\")" in mcp.instructions
+    assert "transmission Automatic" in mcp.instructions

@@ -34,6 +34,13 @@ class FakeBotCircuits:
         self.valid_token = "key_valid_token"
         self.created_apps: list[dict] = []
         self.can_create_apps = True
+        self.codehook_runtimes: set[str] | None = None  # None = accept any
+        self.deploy_conflicts = 0
+        # Runtime traces (backend src/tracing): index rows, and the summary / turn views by session.
+        self.trace_sessions: list[dict] = []
+        self.trace_summaries: dict[str, dict] = {}
+        self.trace_turns: dict[tuple[str, str], dict] = {}
+        self.last_query: dict = {}
 
     # ------------------------------------------------------------------ transport
     def transport(self) -> httpx.MockTransport:
@@ -42,11 +49,16 @@ class FakeBotCircuits:
     def handle(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == UPLOAD_HOST:
             self.uploads[request.url.path] = request.content
+            # The platform's S3 trigger records the archive location on the codehook.
+            hook = self.codehooks.get(request.url.path.removeprefix("/codehooks/").removesuffix(".zip"))
+            if hook is not None:
+                hook["functionInfo"] = {"code": {"bucket": "codehooks", "key": request.url.path}}
             return httpx.Response(200)
         if request.headers.get("Authorization") != self.valid_token:
             return httpx.Response(403, json={"message": "Unauthorized"})
         path = request.url.path
         self.calls.append((request.method, path))
+        self.last_query = dict(request.url.params)
         body = json.loads(request.content) if request.content else {}
         if path == "/apps":
             return self.route_apps(request.method, body)
@@ -61,6 +73,8 @@ class FakeBotCircuits:
 
         if path == "" and method == "GET":
             return ok(self.app)
+        if path.startswith("/traces/sessions") and method == "GET":
+            return self.trace_route(path.removeprefix("/traces/sessions"))
         if path == "/prompt-config/instructions":
             if method == "GET":
                 return ok(self.instructions)
@@ -142,6 +156,8 @@ class FakeBotCircuits:
         if path == "/model/codehooks":
             if method == "GET":
                 return ok(list(self.codehooks.values()))
+            if self.codehook_runtimes is not None and body.get("runtime") not in self.codehook_runtimes:
+                return httpx.Response(400, json={"message": "invalid runtime type"})
             self.codehooks[body["codehookId"]] = {**body, "status": "saved"}
             return ok()
         match = re.fullmatch(r"/model/codehooks/([^/]+)(/upload-url|/deploy)?", path)
@@ -152,6 +168,9 @@ class FakeBotCircuits:
             if suffix == "/upload-url":
                 return ok({"url": f"https://{UPLOAD_HOST}/codehooks/{hook_id}.zip?sig=x"})
             if suffix == "/deploy":
+                if self.deploy_conflicts:  # Lambda still Pending: the backend answers 500
+                    self.deploy_conflicts -= 1
+                    return httpx.Response(500, json={"message": "ResourceConflictException"})
                 self.codehooks[hook_id]["status"] = "deployed"
                 return ok()
             if method == "GET":
@@ -182,6 +201,28 @@ class FakeBotCircuits:
             return missing
 
         return httpx.Response(404, json={"message": f"no fake route {method} {path}"})
+
+    def trace_route(self, rest: str) -> httpx.Response:
+        query = self.last_query
+        if rest == "":
+            rows = [r for r in self.trace_sessions
+                    if (query.get("status") != "error" or r.get("errorCount"))
+                    and r.get("lastSeen", "") >= query.get("since", "")]
+            rows = sorted(rows, key=lambda r: r.get("lastSeen", ""), reverse=True)[:int(query.get("limit", 20))]
+            return httpx.Response(200, json={"pagination": {}, "complete": True, "data": rows})
+        match = re.match(r"^/([^/]+)/summary$", rest)
+        if match:
+            summary = self.trace_summaries.get(match.group(1))
+            if summary is None:
+                return httpx.Response(404, json={"message": "Resource NotFound : no trace"})
+            return httpx.Response(200, json={"appId": self.app_id, "sessionId": match.group(1), **summary})
+        match = re.match(r"^/([^/]+)/turns/([^/]+)$", rest)
+        if match:
+            turn = self.trace_turns.get((match.group(1), match.group(2)))
+            if turn is None:
+                return httpx.Response(404, json={"message": "Resource NotFound : no trace"})
+            return httpx.Response(200, json={"appId": self.app_id, **turn, "detail": query.get("detail", "trimmed")})
+        return httpx.Response(404, json={"message": f"no fake trace route {rest}"})
 
     def route_apps(self, method: str, body: dict) -> httpx.Response:
         if method == "GET":

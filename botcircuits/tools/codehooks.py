@@ -6,9 +6,11 @@ codehook generated from a spec (create_api_tool) plus a type=function agent tool
 same codehook also works as a RUN FUNCTION step in a playbook or a codehook action in a
 workflow — both callers pass {context, slots, defaultInput}.
 
-Deploying a codehook: save config -> presigned upload URL -> PUT zip -> deploy.
+Deploying a codehook: save config -> presigned upload URL -> PUT zip -> wait for the archive
+to register -> deploy (retried while the Lambda is still updating).
 """
 
+import asyncio
 import io
 import re
 import zipfile
@@ -22,7 +24,14 @@ from ..workflow.codegen import env_references, generate_http_codehook
 from .agent_tools import validate_tool
 
 _ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{2,63}$")
-Runtime = Literal["nodejs20.x", "nodejs22.x", "python3.12", "python3.13"]
+Runtime = Literal["nodejs22.x", "nodejs20.x", "python3.13", "python3.12"]
+DEFAULT_RUNTIME = "nodejs22.x"
+# A backend whose CODEHOOK_RUNTIMES predates these rejects them with "invalid runtime type";
+# fall back to the newest runtime of the same family it accepts (still creatable on AWS).
+LEGACY_RUNTIME = {"nodejs": "nodejs18.x", "python": "python3.10"}
+ARCHIVE_POLLS = 15
+DEPLOY_ATTEMPTS = 4
+DEPLOY_RETRY_SECONDS = 5
 
 
 def _zip(source: str, runtime: str) -> bytes:
@@ -37,6 +46,30 @@ def _stored_env(hook: dict | None) -> dict:
     return hook.get("environmentVariables") or (hook.get("functionInfo") or {}).get("environmentVariables") or {}
 
 
+async def _await_archive(app_id: str, codehook_id: str) -> None:
+    # An S3 trigger records the uploaded zip's location on the codehook asynchronously;
+    # deploying a new codehook before it lands sends CreateFunction an empty S3 bucket/key.
+    for _ in range(ARCHIVE_POLLS):
+        code = ((await client.get_codehook(app_id, codehook_id) or {}).get("functionInfo") or {}).get("code") or {}
+        if code.get("bucket") and code.get("key"):
+            return
+        await asyncio.sleep(1)
+    raise RuntimeError(f"Codehook {codehook_id}'s uploaded code was not registered yet; retry shortly")
+
+
+async def _deploy_with_retry(app_id: str, codehook_id: str) -> None:
+    # A just-created or just-updated Lambda stays Pending/InProgress for a few seconds and the
+    # backend reports that ResourceConflict as a 500; a retry after a pause succeeds.
+    for attempt in range(DEPLOY_ATTEMPTS):
+        try:
+            await client.deploy_codehook(app_id, codehook_id)
+            return
+        except client.ApiError as exc:
+            if (exc.status or 0) < 500 or attempt == DEPLOY_ATTEMPTS - 1:
+                raise
+            await asyncio.sleep(DEPLOY_RETRY_SECONDS)
+
+
 async def deploy(app_id: str, codehook_id: str, source: str, runtime: str, environment: dict | None) -> dict:
     if not _ID.match(codehook_id):
         raise ValueError("codehook_id must start with a letter and use 3-64 letters, digits, _ or -")
@@ -47,13 +80,21 @@ async def deploy(app_id: str, codehook_id: str, source: str, runtime: str, envir
     existing = next((c for c in await client.list_codehooks(app_id) if c.get("codehookId") == codehook_id), None)
     if environment is None:
         environment = _stored_env(existing)  # keep stored variables on redeploy
-    await client.save_codehook_config(app_id, {
+    config = {
         "codehookId": codehook_id, "codehookType": "fullfillment", "runtime": runtime,  # sic: backend spelling
         "handler": "index.handler", "codeFrom": "archive", "inlineCode": "", "environmentVariables": environment,
-    })
+    }
+    try:
+        await client.save_codehook_config(app_id, config)
+    except client.ApiError as exc:
+        if "invalid runtime" not in str(exc).lower():
+            raise
+        runtime = LEGACY_RUNTIME["python" if runtime.startswith("python") else "nodejs"]
+        await client.save_codehook_config(app_id, {**config, "runtime": runtime})
     url = await client.codehook_upload_url(app_id, codehook_id)
     await client.upload(url, _zip(source, runtime), "application/zip")
-    await client.deploy_codehook(app_id, codehook_id)
+    await _await_archive(app_id, codehook_id)
+    await _deploy_with_retry(app_id, codehook_id)
     return {"codehookId": codehook_id, "runtime": runtime, "created": existing is None,
             "environmentVariables": sorted(environment)}
 
@@ -70,6 +111,22 @@ def register(mcp: FastMCP) -> None:
         """
         return [{k: c.get(k) for k in ("codehookId", "runtime", "codehookType", "status")}
                 for c in await client.list_codehooks(app_id)]
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    async def get_codehook(app_id: str, codehook_id: str) -> dict:
+        """
+        Read a codehook's configuration: runtime, handler, status and the NAMES of its environment
+        variables (values are never returned). Use it to check what a tool or step calls.
+
+        Args:
+            app_id: The agent / app ID.
+            codehook_id: The codehook id.
+        """
+        hook = await client.get_codehook(app_id, codehook_id) or {}
+        info = hook.get("functionInfo") or {}
+        return {"codehookId": hook.get("codehookId", codehook_id),
+                **{k: hook.get(k) or info.get(k) for k in ("runtime", "handler", "codehookType", "status")},
+                "environmentVariables": sorted(_stored_env(hook))}
 
     @mcp.tool()
     async def create_api_tool(
@@ -114,7 +171,7 @@ def register(mcp: FastMCP) -> None:
         if len(description.strip()) < 10:
             raise ValueError("description must say what the tool does and when to use it")
         codehook_id = f"api_{name}"
-        needed =env_references(url, body_template, *(query or {}).values(), *(headers or {}).values())
+        needed = env_references(url, body_template, *(query or {}).values(), *(headers or {}).values())
         existing = next((c for c in await client.list_codehooks(app_id) if c.get("codehookId") == codehook_id), None)
         available = set(environment or {}) | (set(_stored_env(existing)) if environment is None else set())
         missing = sorted(needed - available)
@@ -124,7 +181,7 @@ def register(mcp: FastMCP) -> None:
             method=method, url=url, query=query, headers=headers, body_template=body_template,
             required_inputs=[k for k, p in parameters.items() if isinstance(p, dict) and p.get("required")],
             result_path=result_path, slot_mapping=slot_mapping)
-        deployed = await deploy(app_id, codehook_id, source, "nodejs20.x", environment)
+        deployed = await deploy(app_id, codehook_id, source, DEFAULT_RUNTIME, environment)
 
         tools = await client.list_prompt(app_id, "tools")
         current = next((t for t in tools if t.get("name") == name), None)
@@ -144,7 +201,7 @@ def register(mcp: FastMCP) -> None:
         app_id: str,
         codehook_id: str,
         source: str,
-        runtime: Runtime = "nodejs20.x",
+        runtime: Runtime = DEFAULT_RUNTIME,
         environment: dict[str, str] | None = None,
     ) -> dict:
         """
@@ -161,7 +218,7 @@ def register(mcp: FastMCP) -> None:
             app_id: The agent / app ID.
             codehook_id: Stable id, e.g. normalize_order.
             source: Full index.js (exports.handler) or index.py (def handler(event, context)).
-            runtime: Lambda runtime.
+            runtime: Lambda runtime; nodejs22.x (default), nodejs20.x, python3.13 or python3.12.
             environment: Environment variables; omit to keep the stored ones.
         """
         return await deploy(app_id, codehook_id, source, runtime, environment)

@@ -23,7 +23,15 @@ _ID = re.compile(r"^[A-Za-z0-9_\-.:]{1,128}$")
 _transport: httpx.AsyncBaseTransport | None = None
 
 
-class NotFoundError(RuntimeError):
+class ApiError(RuntimeError):
+    """A non-2xx response; `status` is the HTTP status code."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+class NotFoundError(ApiError):
     pass
 
 
@@ -54,8 +62,8 @@ async def _request(method: str, path: str, json: Any = None, params: dict | None
             detail = detail.get("message", detail) if isinstance(detail, dict) else detail
         except ValueError:
             detail = r.text[:500]
-        error = NotFoundError if r.status_code == 404 else RuntimeError
-        raise error(f"BotCircuits API error {r.status_code} on {method} {path}: {detail}")
+        error = NotFoundError if r.status_code == 404 else ApiError
+        raise error(f"BotCircuits API error {r.status_code} on {method} {path}: {detail}", r.status_code)
     if not r.content:
         return {}
     try:
@@ -324,3 +332,31 @@ async def save_text_source(app_id: str, data_source_id: str, text: str) -> dict:
 
 async def register_data_source(app_id: str, metadata: dict) -> dict:
     return await _request("POST", f"{_app(app_id)}/knowledge/data-sources", metadata)
+
+
+# ---------------------------------------------------------------------------
+# Runtime traces (botcircuits-backend src/tracing), read-only
+# ---------------------------------------------------------------------------
+async def search_trace_sessions(app_id: str, status: str | None = None, since: str | None = None,
+                                limit: int = 10) -> dict:
+    """Traced sessions, newest first; `status="error"` keeps only sessions with errors."""
+    params = {"limit": str(limit)}
+    if status:
+        params["status"] = status
+    if since:
+        params["since"] = since
+    # Not unwrapped: `complete` says whether the scan covered every session.
+    return await _request("GET", f"{_app(app_id)}/traces/sessions", params=params)
+
+
+async def get_trace_summary(app_id: str, session_id: str, last_turns: int | None = None) -> dict:
+    params = {"lastTurns": str(last_turns)} if last_turns else None
+    return _unwrap(await _request(
+        "GET", f"{_app(app_id)}/traces/sessions/{_safe(session_id, 'session_id')}/summary", params=params))
+
+
+async def get_turn_trace(app_id: str, session_id: str, message_id: str, full: bool = False) -> dict:
+    return _unwrap(await _request(
+        "GET", f"{_app(app_id)}/traces/sessions/{_safe(session_id, 'session_id')}"
+               f"/turns/{_safe(message_id, 'message_id')}",
+        params={"detail": "full"} if full else None))

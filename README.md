@@ -99,9 +99,9 @@ You → Claude Code → "customers should be able to return an order"
 
 | Mechanism | When | Contains |
 |---|---|---|
-| `server.instructions` | Every connection (MCP `initialize`) | Build flow, construct policy, playbook design method + checklist, playbook format |
-| `get_authoring_guide(topic)` tool | On demand, any client | `capabilities`, `playbook_design`, `playbook`, `playbook_examples`, `workflow` |
-| `botcircuits://…` resources | On demand, clients that read resources | Same five guides |
+| `server.instructions` | Every connection (MCP `initialize`) | Build flow, construct policy, troubleshooting entry point, playbook design method + checklist, playbook format |
+| `get_authoring_guide(topic)` tool | On demand, any client | `capabilities`, `playbook_design`, `playbook`, `playbook_examples`, `workflow`, `troubleshooting` |
+| `botcircuits://…` resources | On demand, clients that read resources | Same six guides |
 | `design_playbook` prompt | User-invoked (e.g. a slash command) | Step-by-step: overview → inputs → resources → variables → steps → validate → confirm → save |
 
 ### Playbooks that work
@@ -116,6 +116,15 @@ You → Claude Code → "customers should be able to return an order"
   (⏸ where it waits). Design warnings: a path that ends silently, steps after a HANDOFF, an IF
   with no ELSE at the end, a retry loop that never waits for the customer, too many messages
   before a question. Button payloads are checked against `values` variables.
+
+### Troubleshooting from runtime traces
+
+When the user reports a misbehaving agent (wrong answer, error, stuck in a playbook, wrong branch,
+slow), the host AI reads the runtime traces before changing anything — broad to narrow:
+`find_problem_sessions` → `get_session_trace` (per-turn digest + detected `issues`) →
+`get_turn_trace` (one turn's span tree: model calls, tools, steps, branch decisions with the values
+they were judged on). `get_authoring_guide("troubleshooting")` maps each issue to its likely
+configuration fix. Read-only; traces are kept for 30 days.
 
 ---
 
@@ -134,7 +143,7 @@ Delivered to the host AI on connect and enforced by the save tools:
 `upload_workflow` rejects a *new* workflow below those thresholds and points to `create_playbook`.
 Playbooks and workflows are validated against the runtime's rules before anything is saved.
 
-## Tool inventory (49)
+## Tool inventory (53)
 
 | Group | Tools |
 |---|---|
@@ -143,16 +152,17 @@ Playbooks and workflows are validated against the runtime's rules before anythin
 | Playbooks (6) | `list_playbooks`, `get_playbook`, `validate_playbook`, `create_playbook`, `update_playbook`, `delete_playbook` |
 | Workflows (5) | `list_workflows`, `get_workflow`, `validate_workflow_definition`, `upload_workflow`, `delete_workflow` |
 | Agent tools (5) | `list_agent_tools`, `get_agent_tool`, `create_agent_tool`, `update_agent_tool`, `delete_agent_tool` |
-| Codehooks / API tools (4) | `list_codehooks`, `create_api_tool`, `deploy_codehook`, `delete_codehook` |
+| Codehooks / API tools (5) | `list_codehooks`, `get_codehook`, `create_api_tool`, `deploy_codehook`, `delete_codehook` |
 | Sub-agents (5) | `list_sub_agents`, `get_sub_agent`, `create_sub_agent`, `update_sub_agent`, `delete_sub_agent` |
 | Skills (5) | `list_skills`, `get_skill`, `create_skill`, `update_skill`, `delete_skill` |
 | MCP servers (4) | `list_mcp_servers`, `create_mcp_server`, `update_mcp_server`, `delete_mcp_server` |
 | Knowledge (3) | `list_knowledge_sources`, `add_text_knowledge`, `add_web_knowledge` |
+| Troubleshooting (3) | `find_problem_sessions`, `get_session_trace`, `get_turn_trace` (read-only) |
 
 \* Still disabled through MCP — use the console. Delete tools carry the MCP `destructiveHint` annotation.
 
 Resources: `botcircuits://capability-guide`, `botcircuits://playbook-design`, `botcircuits://playbook-schema`,
-`botcircuits://playbook-examples`, `botcircuits://workflow-schema`
+`botcircuits://playbook-examples`, `botcircuits://workflow-schema`, `botcircuits://troubleshooting`
 (also available through `get_authoring_guide` for clients that don't read resources).
 
 ## Project structure

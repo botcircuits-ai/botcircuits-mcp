@@ -17,7 +17,7 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from .guides import CAPABILITY_GUIDE, GUIDES, PLAYBOOK_DESIGN, PLAYBOOK_SCHEMA, WORKFLOW_SCHEMA
+from .guides import CAPABILITY_GUIDE, GUIDES, PLAYBOOK_DESIGN, PLAYBOOK_SCHEMA, TROUBLESHOOTING, WORKFLOW_SCHEMA
 from .tools import register_all
 
 _INSTRUCTIONS = f"""\
@@ -52,6 +52,12 @@ sub-agent's capabilities, or directly as a main agent tool?" Then do exactly ONE
 A playbook/workflow has at most one main-agent tool; the server keeps it that way.
 Do not report the task as done without asking.
 
+TROUBLESHOOTING: when the user says their agent misbehaved in a conversation (wrong or missing
+answer, error, stuck in a playbook/workflow, wrong branch, slow), read the runtime trace before
+changing anything: get_authoring_guide("troubleshooting"), then find_problem_sessions ->
+get_session_trace -> get_turn_trace. Explain the cause with evidence from the trace, propose the
+fix, and apply it once the user agrees.
+
 {CAPABILITY_GUIDE}
 {PLAYBOOK_DESIGN}
 {PLAYBOOK_SCHEMA}
@@ -68,7 +74,8 @@ register_all(mcp)
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_authoring_guide(
-    topic: Literal["capabilities", "playbook", "playbook_design", "playbook_examples", "workflow"],
+    topic: Literal["capabilities", "playbook", "playbook_design", "playbook_examples", "workflow",
+                   "troubleshooting"],
 ) -> str:
     """
     Return an authoring guide:
@@ -77,9 +84,10 @@ async def get_authoring_guide(
       playbook           playbook step format (every step kind and field)
       playbook_examples  complete, validated create_playbook examples to copy from
       workflow           canvas workflow schema (complex processes only)
+      troubleshooting    diagnosing a misbehaving agent from runtime traces (read before the trace tools)
 
     Args:
-        topic: capabilities · playbook_design · playbook · playbook_examples · workflow
+        topic: capabilities · playbook_design · playbook · playbook_examples · workflow · troubleshooting
     """
     return GUIDES[topic]
 
@@ -130,6 +138,12 @@ Follow the playbook design procedure exactly:
 7. Show me the outline and wait for my confirmation, then call create_playbook with the same arguments.
 8. Ask whether to connect it to the main agent or a sub-agent, and update the agent instructions.
 """
+
+
+@mcp.resource("botcircuits://troubleshooting", name="BotCircuits Troubleshooting Guide", mime_type="text/markdown",
+              description="Diagnosing a misbehaving agent from runtime traces: procedure, fields, issue → fix")
+def troubleshooting_resource() -> str:
+    return TROUBLESHOOTING
 
 
 @mcp.resource("botcircuits://capability-guide", name="BotCircuits Capability Guide", mime_type="text/markdown",
