@@ -113,3 +113,23 @@ async def test_emptiness_in_natural_conditions_warns(fake):  # noqa: F811
     playbook = _pb({"kind": "IF", "branches": [branch, {"conditionType": "else", "steps": [_send("Found")]}]})
     result = await _errors(playbook, {"order_status": {"dataType": "any"}})
     assert result["valid"] and any("can never match" in w for w in result["warnings"])
+
+
+def test_data_type_warnings_flag_generic_ask_variables():
+    from botcircuits.workflow.authoring_rules import data_type_warnings
+
+    playbook = {"sections": [{"title": "s", "steps": [
+        {"kind": "ASK", "config": {"slot": "customer_email"}},
+        {"kind": "ASK", "config": {"slot": "visit_date", "inputType": "BUTTONS"}},
+    ]}]}
+    warnings = data_type_warnings(playbook, {"customer_email": {"dataType": "custom"},
+                                             "visit_date": {"dataType": "any"}})
+    assert len(warnings) == 1 and '"email"' in warnings[0]
+
+
+def test_closed_choice_free_text_ask_suggests_buttons():
+    from botcircuits.workflow.authoring_rules import data_type_warnings
+
+    playbook = {"sections": [{"title": "s", "steps": [{"kind": "ASK", "config": {"slot": "transmission"}}]}]}
+    warnings = data_type_warnings(playbook, {"transmission": {"dataType": "custom"}})
+    assert len(warnings) == 1 and "BUTTONS" in warnings[0]

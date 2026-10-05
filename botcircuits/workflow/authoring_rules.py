@@ -215,3 +215,84 @@ def natural_condition_warnings(playbook: dict) -> list[str]:
     for section in playbook.get("sections") or []:
         visit(section.get("steps"))
     return warnings
+
+
+# Variable names that say which predefined dataType the answer has. The runtime
+# validates and normalises these types in code (number "42", boolean "true"/"false",
+# date "YYYY-MM-DD", datetime "YYYY-MM-DDTHH:MM"), so an ASK declared `any` or
+# `custom` instead loses that check. Identifiers (order/phone/account numbers) are
+# deliberately not `number`: they are codes, best checked with `regex`.
+_TYPE_BY_NAME = [
+    ("email", re.compile(r"(^|_)e?mail(_address)?($|_)")),
+    ("age", re.compile(r"(^|_)age$")),
+    ("datetime", re.compile(r"datetime|timestamp")),
+    ("date", re.compile(r"(^|_)(date|dob)($|_)|birth_?date|date_of_birth")),
+    ("boolean", re.compile(r"^(is|has|wants|agrees?|accepts?|confirm(s|ed)?|consents?)_|_(confirmed|consent|opt_in)$")),
+    ("regex", re.compile(r"(^|_)(phone|mobile|zip|postcode|postal_code)($|_)|_(id|number|no|code|ref|reference)$")),
+    ("number", re.compile(r"(^|_)(quantity|qty|amount|count|price|budget|income|salary|weight|height|"
+                          r"guests|nights|people|units|total)($|_)|^(number|num|no)_of_")),
+]
+
+
+# Variables that are a choice from a small, standard set: asked as free text they invite
+# misspellings and leave the customer guessing what is possible, so they should be buttons.
+_CLOSED_CHOICE_NAME = re.compile(
+    r"(^|_)(transmission|gearbox|fuel(_type)?|delivery_(method|option|type)|shipping_(method|option)|"
+    r"payment_(method|type|option)|contact_(preference|method|channel)|trip_type|cabin_class|seat_class|"
+    r"room_type|bed_type|priority|urgency|severity|rating|satisfaction|"
+    r"meal_(type|preference)|time_of_day|preferred_(channel|language))($|_)")
+MAX_BUTTONS = 6
+
+
+def data_type_warnings(playbook: dict, variables: dict) -> list[str]:
+    """ASK variables whose type or input style does not fit the answer.
+
+    - typed-text ASKs declared `any`/`custom` whose name implies a predefined dataType;
+    - closed choices (yes/no, a short `values` list, a standard choice like transmission)
+      asked as free text instead of BUTTONS.
+    """
+    asks: dict[str, str] = {}
+
+    def visit(steps: list) -> None:
+        for step in steps or []:
+            cfg = step.get("config") or {}
+            if step.get("kind") == "ASK" and cfg.get("slot"):
+                asks.setdefault(cfg["slot"], cfg.get("inputType") or "TEXT")
+            for branch in step.get("branches") or []:
+                visit(branch.get("steps"))
+
+    for section in playbook.get("sections") or []:
+        visit(section.get("steps"))
+
+    warnings: list[str] = []
+    for name, input_type in asks.items():
+        if input_type != "TEXT":
+            continue  # buttons/cards/documents supply their own value
+        definition = variables.get(name) or {}
+        current = definition.get("dataType")
+        lowered = name.lower()
+        if current == "boolean":
+            warnings.append(f"ASK '{name}' is a yes/no question asked as free text — use inputType BUTTONS "
+                            "with Yes/No (payloads \"true\"/\"false\").")
+            continue
+        if current == "values":
+            options = [v.strip() for v in str(definition.get("content") or "").split(",") if v.strip()]
+            if 1 < len(options) <= MAX_BUTTONS:
+                warnings.append(f"ASK '{name}' offers a fixed choice ({', '.join(options)}) as free text — use "
+                                "inputType BUTTONS with one button per value (payloads from the values list).")
+            continue
+        if current not in ("any", "custom"):
+            continue
+        if _CLOSED_CHOICE_NAME.search(lowered):
+            warnings.append(f"ASK '{name}' looks like a choice from a small fixed set but is asked as free text "
+                            f"('{current}') — use inputType BUTTONS (or CARDS) with a `values` variable listing "
+                            "the payloads, e.g. transmission: Automatic/Manual.")
+            continue
+        suggested = next((t for t, pattern in _TYPE_BY_NAME if pattern.search(lowered)), None)
+        if suggested == "regex" and current == "any":
+            warnings.append(f"ASK variable '{name}' is '{current}' but looks like a code or identifier — "
+                            "use dataType \"regex\" with its format as content so a wrong value is re-asked.")
+        elif suggested and suggested != "regex":
+            warnings.append(f"ASK variable '{name}' is '{current}' — use the predefined dataType \"{suggested}\" "
+                            "so the runtime validates and normalises the answer.")
+    return warnings

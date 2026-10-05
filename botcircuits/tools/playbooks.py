@@ -15,7 +15,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from .. import client
-from ..workflow.authoring_rules import check_authoring, natural_condition_warnings, normalize_variables
+from ..workflow.authoring_rules import (check_authoring, data_type_warnings, natural_condition_warnings,
+                                       normalize_variables)
 from ..workflow.complexity import WORKFLOW_MIN_CONDITIONS, WORKFLOW_MIN_STEPS, playbook_complexity
 from ..workflow.constants import RESERVED_SLOTS
 from ..workflow.lint import lint_flow
@@ -44,6 +45,7 @@ async def check_playbook(app_id: str, playbook: dict, variables: dict, existing_
     if not errors:
         errors += check_authoring(normalized, defined, usage["assigned"])
     warnings += natural_condition_warnings(normalized)
+    warnings += data_type_warnings(normalized, variables)
 
     stm = compiled.get("stmDefinition")
     if stm:

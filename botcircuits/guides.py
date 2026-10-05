@@ -132,7 +132,23 @@ PLAYBOOK_DESIGN = """\
    variable names they return.
 3. **Variables.** Name them snake_case and define each one the customer answers, choosing the
    strictest dataType that fits: values (fixed choices; must include every button payload),
-   regex (codes/ids), email / number / date, custom with a precise description otherwise.
+   regex (codes/ids — order, phone, account numbers are codes, not `number`), and the
+   predefined types, which the runtime validates and normalises in code: email · number
+   (quantities, amounts → "42") · age (whole years 0-130) · date (→ "2026-10-05"; "tomorrow"
+   is resolved) · datetime (date AND time → "2026-10-05T14:30") · boolean (typed yes/no →
+   "true"/"false"; for Yes/No buttons use payloads "true"/"false"). custom with a precise
+   description for anything that must be understood rather than matched; any only for free
+   text nothing depends on. Write conditions and API bodies against those stored formats.
+   custom content is passed verbatim to the extraction model — write it as an instruction
+   ("the patient's full name (first and last)"). A custom answer is NEVER rejected (raw text is
+   stored when nothing is extracted), so verify values that must be correct with a RUN and a
+   "not found" branch. captureFromUserInput true = may be pre-filled from anything the customer
+   said (its ASK is then skipped); use it for every ASK variable, and ask confirmations with
+   autoFillFromEntity false.
+   Input type: a closed choice is never a free-text ASK — yes/no → BUTTONS on a boolean variable
+   (payloads "true"/"false"); 2-6 options known up front (e.g. transmission Automatic/Manual,
+   fuel type) → BUTTONS, or CARDS when options need an image/price, on a values variable listing
+   every payload. TEXT only for open answers (dates, emails, names, reasons).
    Also declare what a RUN FUNCTION returns ({"dataType": "any", "captureFromUserInput": false}):
    the tools can't see inside a codehook, and undeclared outputs show up as warnings.
 4. **Sections = stages.** Usually: Identify/collect → Look up / act → Decide → Resolve/close.
