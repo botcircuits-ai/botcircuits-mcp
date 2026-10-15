@@ -99,9 +99,9 @@ You → Claude Code → "customers should be able to return an order"
 
 | Mechanism | When | Contains |
 |---|---|---|
-| `server.instructions` | Every connection (MCP `initialize`) | Build flow, construct policy, troubleshooting entry point, playbook design method + checklist, playbook format |
-| `get_authoring_guide(topic)` tool | On demand, any client | `capabilities`, `playbook_design`, `playbook`, `playbook_examples`, `workflow`, `troubleshooting` |
-| `botcircuits://…` resources | On demand, clients that read resources | Same six guides |
+| `server.instructions` | Every connection (MCP `initialize`) | Build flow, agent scope (required `## Scope` section), construct policy, troubleshooting entry point, playbook design method + checklist, playbook format |
+| `get_authoring_guide(topic)` tool | On demand, any client | `capabilities`, `playbook_design`, `playbook`, `playbook_examples`, `workflow`, `troubleshooting`, `scope` |
+| `botcircuits://…` resources | On demand, clients that read resources | Same seven guides |
 | `design_playbook` prompt | User-invoked (e.g. a slash command) | Step-by-step: overview → inputs → resources → variables → steps → validate → confirm → save |
 
 ### Playbooks that work
@@ -162,7 +162,7 @@ Playbooks and workflows are validated against the runtime's rules before anythin
 \* Still disabled through MCP — use the console. Delete tools carry the MCP `destructiveHint` annotation.
 
 Resources: `botcircuits://capability-guide`, `botcircuits://playbook-design`, `botcircuits://playbook-schema`,
-`botcircuits://playbook-examples`, `botcircuits://workflow-schema`, `botcircuits://troubleshooting`
+`botcircuits://playbook-examples`, `botcircuits://workflow-schema`, `botcircuits://troubleshooting`, `botcircuits://agent-scope`
 (also available through `get_authoring_guide` for clients that don't read resources).
 
 ## Project structure

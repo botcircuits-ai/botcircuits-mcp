@@ -4,14 +4,31 @@ instructions of prompt-based agents.
 """
 
 import asyncio
+import re
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from .. import client
+from ..guides import SCOPE_TEMPLATE
 
 _CONSOLE = "https://platform.botcircuits.com/"
+
+_SCOPE_HEADING = re.compile(r"^#{1,4}\s*scope\b", re.IGNORECASE | re.MULTILINE)
+_OUT_OF_SCOPE_RULE = re.compile(r"out[- ]of[- ]scope|outside (of )?(this|your|the) scope", re.IGNORECASE)
+
+
+def scope_status(prompt: str) -> dict:
+    """Whether the global prompt bounds the agent to the business's domain (see guides.AGENT_SCOPE)."""
+    prompt = prompt or ""
+    status = {"scopeDefined": bool(_SCOPE_HEADING.search(prompt) and _OUT_OF_SCOPE_RULE.search(prompt))}
+    if not status["scopeDefined"]:
+        status["scopeNote"] = ("The agent is not scoped: it will engage with any request (e.g. a plumbing agent "
+                               "taking a pizza order). Establish the business scope with the user and write "
+                               "instructions with a '## Scope' section before building anything else "
+                               "(get_authoring_guide(\"scope\")).")
+    return status
 
 
 def register(mcp: FastMCP) -> None:
@@ -64,6 +81,7 @@ def register(mcp: FastMCP) -> None:
             "app": {k: app.get(k) for k in ("appId", "name", "description", "appMode")},
             "promptBased": app.get("appMode") == "prompt_based",
             "globalPrompt": prompt[:3000] + ("…" if len(prompt) > 3000 else ""),
+            **scope_status(prompt),
             "settings": {} if "settings" in errors else values["settings"],
             "agentTools": [{k: t.get(k) for k in ("id", "name", "type", "toolData")}
                            for t in tools if t.get("type") != "sub_agent"],
@@ -89,7 +107,9 @@ def register(mcp: FastMCP) -> None:
 
         Args:
             name: Application name, e.g. "Acme Support".
-            description: One sentence on what the agent is for.
+            description: Which business the agent serves and what it helps customers with, e.g.
+                "Acme Plumbing: books plumber visits and answers questions about plumbing services".
+                Used to set the agent's scope.
             allow_duplicate_name: Create even if an application with this name exists (only when the user says so).
         """
         name = name.strip()
@@ -115,7 +135,8 @@ def register(mcp: FastMCP) -> None:
             raise RuntimeError("The API did not return an appId; call list_applications before retrying.")
         return {"created": True, "appId": app_id, "name": name, "appMode": client.APP_MODE_PROMPT_BASED,
                 "next": "Default settings and the runtime access key are provisioned in the background "
-                        "(a few seconds). Use this appId for every following call."}
+                        "(a few seconds). Use this appId for every following call. Before building "
+                        "anything, write the agent's '## Scope' instructions (get_authoring_guide(\"scope\"))."}
 
     @mcp.tool(annotations=ToolAnnotations(destructiveHint=True))
     async def delete_application(app_id: str) -> str:
@@ -192,9 +213,12 @@ def register(mcp: FastMCP) -> None:
         """
         Write a prompt-based agent's global instructions (its system prompt).
 
-        State the role, scope, tone, when to use each tool / skill / playbook (by runtime
-        name), how to handle missing inputs, grounding rules and human handoff. Keep it
-        short; details belong in skills and tool descriptions.
+        The resulting prompt must open with a `## Scope` section that names the business,
+        lists what the agent helps with and says how it declines out-of-scope requests (the
+        runtime has no other topic guard; prompts without one are refused — see
+        get_authoring_guide("scope")). Then state role, tone, when to use each tool / skill /
+        playbook (by runtime name), how to handle missing inputs, grounding rules and human
+        handoff. Keep it short; details belong in skills and tool descriptions.
 
         Args:
             app_id: The application ID.
@@ -207,5 +231,12 @@ def register(mcp: FastMCP) -> None:
         if mode == "append":
             current = (await client.get_instructions(app_id)).get("globalPrompt") or ""
             text = f"{current.rstrip()}\n\n{text}" if current.strip() else text
+        if not scope_status(text)["scopeDefined"]:
+            return {"saved": False,
+                    "error": "Instructions were not saved: they need a '## Scope' section that names the "
+                             "business, lists what the agent helps with and tells it to decline out-of-scope "
+                             "requests without answering, asking follow-up questions or starting any tool or "
+                             "playbook. If you do not know the business scope, ask the user. Put this "
+                             "section first:\n\n" + SCOPE_TEMPLATE}
         await client.save_instructions(app_id, {"globalPrompt": text})
         return {"saved": True, "globalPromptLength": len(text)}

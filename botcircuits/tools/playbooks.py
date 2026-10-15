@@ -176,7 +176,9 @@ def register(mcp: FastMCP) -> None:
         Args:
             app_id: The agent / app ID.
             name: Display name.
-            description: When the agent should run it (also the agent tool description).
+            description: When the agent should run it (also the agent tool description). Name the
+                business domain ("a customer wants to book a plumber visit", not "a customer wants
+                to book or order something") so it never matches unrelated requests.
             playbook: {"sections": [{"title": "...", "steps": [...]}]}; ids optional. See botcircuits://playbook-schema.
             variables: Slot definitions, e.g. {"order_id": {"dataType": "custom", "content": "order number like ORD-123", "captureFromUserInput": true}}.
             expose_as_agent_tool: Also register a type=workflow agent tool for the main agent. Ask the user first.

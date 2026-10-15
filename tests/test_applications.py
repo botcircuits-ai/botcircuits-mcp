@@ -37,3 +37,38 @@ def test_instructions_require_asking_new_or_existing():
     assert "CHOOSING THE APPLICATION" in text
     assert "Do you want to create a new application, or use an" in text
     assert 'appMode "prompt_based"' in text
+
+
+SCOPED_PROMPT = """## Scope
+You are the assistant for Acme Plumbing, a residential plumbing company. You ONLY help with:
+- booking plumber visits
+Everything else is out of scope. For an out-of-scope request, do not answer it or start any playbook."""
+
+
+async def test_overview_flags_unscoped_agent(fake):  # noqa: F811
+    result = await call("get_application_overview", app_id=fake.app_id)
+    assert result["scopeDefined"] is False and "Scope" in result["scopeNote"]
+    fake.instructions["globalPrompt"] = SCOPED_PROMPT
+    result = await call("get_application_overview", app_id=fake.app_id)
+    assert result["scopeDefined"] is True and "scopeNote" not in result
+
+
+async def test_instructions_without_scope_are_refused(fake):  # noqa: F811
+    result = await call("update_agent_instructions", app_id=fake.app_id,
+                        global_prompt="You are a friendly plumbing assistant. Use book_visit to book.")
+    assert result["saved"] is False and "## Scope" in result["error"]
+    assert "globalPrompt" not in fake.instructions
+
+
+async def test_instructions_with_scope_are_saved_and_survive_append(fake):  # noqa: F811
+    result = await call("update_agent_instructions", app_id=fake.app_id, global_prompt=SCOPED_PROMPT)
+    assert result["saved"], result
+    result = await call("update_agent_instructions", app_id=fake.app_id,
+                        global_prompt="Use book_visit when a customer wants a plumber.", mode="append")
+    assert result["saved"], result
+    assert fake.instructions["globalPrompt"].startswith("## Scope")
+
+
+async def test_scope_guidance_is_delivered():
+    assert "## Agent scope" in mcp.instructions
+    assert "## Scope" in (await call("get_authoring_guide", topic="scope"))

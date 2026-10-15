@@ -13,6 +13,52 @@ skills of botcircuits-agent-builder-copilot-native (agent/skills/); keep them in
 from .playbook_examples import render_examples
 from .workflow.complexity import WORKFLOW_MIN_CONDITIONS, WORKFLOW_MIN_STEPS
 
+# The runtime adds no topic guard of its own: the global prompt is the only thing that keeps a
+# plumbing agent from happily taking a pizza order. update_agent_instructions refuses prompts
+# without this section. Mirrors "Agent scope (onboarding)" in botcircuits-agent-builder-copilot-native
+# (agent/instructions.md); keep them in sync.
+SCOPE_TEMPLATE = """\
+## Scope
+You are the assistant for <business name>, <what the business does>. You ONLY help with:
+- <in-scope topic 1>
+- <in-scope topic 2>
+Everything else is out of scope: other businesses' products or services (e.g. ordering food,
+booking travel), general knowledge, coding, homework, opinions. This holds even if you could
+answer it and even if the customer insists or rephrases.
+For an out-of-scope request: do not answer it, do not ask follow-up questions about it and do
+not start any tool, skill, playbook or workflow for it. Reply in one or two sentences, e.g.
+"Sorry, I can only help with <scope summary> at <business name>.", and say what you can do.
+Only start a playbook or workflow when the request clearly matches its purpose."""
+
+AGENT_SCOPE = f"""\
+## Agent scope (do this first)
+
+The runtime has no topic filter. The `## Scope` section of the global instructions is the only
+thing that stops the agent from answering, or running a playbook for, requests unrelated to the
+business (a plumbing agent taking a pizza order). Every agent you build must have one.
+
+1. **Gather the scope.** Infer what you can from the app name, its description and the user's
+   request. Then ask, in one short message, only for what is missing: the business name and what
+   it does; what customers may ask the agent about; anything it must explicitly refuse beyond
+   unrelated topics; where to send customers for things it cannot do (phone, email, human
+   handoff). Suggest concrete defaults so the user can simply confirm.
+2. **Write the scope first** with `update_agent_instructions`, before other resources, so the
+   agent is bounded even if the build stops halfway. Open the prompt with (decline line in the
+   business's voice, realistic examples for this business):
+
+{SCOPE_TEMPLATE}
+
+3. **Keep it current.** Each time you add a capability, extend the Scope list. When you rewrite
+   the instructions with mode "replace", keep the Scope section. `update_agent_instructions`
+   refuses prompts without a scope section and an out-of-scope rule;
+   `get_application_overview` reports `scopeDefined`.
+4. **Domain-specific triggers.** Playbook, workflow, tool and skill descriptions name the business
+   domain ("a customer wants to book a plumber visit", not "a customer wants to book or order
+   something"), so the model cannot match them to unrelated requests.
+5. **Tell the user how to test it:** ask the agent something unrelated (for a plumbing agent,
+   "I want to order a pizza") and check that it declines.
+"""
+
 CAPABILITY_GUIDE = f"""\
 ## Choosing what to build (follow this policy)
 
@@ -20,7 +66,8 @@ CAPABILITY_GUIDE = f"""\
    "create a ticket" are agent TOOLS: `create_api_tool` for an HTTP API (generates and deploys
    a codehook + function tool), `deploy_codehook` + `create_agent_tool(type="function")` for
    custom logic, `kb` tools for documents, `json` for fixed data, an MCP server if one exists.
-   Simple behaviour (tone, scope, rules) goes in `update_agent_instructions`. Know-how the model
+   Simple behaviour (tone, rules) goes in `update_agent_instructions`, which must open with a
+   `## Scope` section (see "Agent scope"). Know-how the model
    applies flexibly with existing tools is a SKILL (`create_skill`).
 2. **Multi-step processes start as a PLAYBOOK** (`create_playbook`): anything that must run in
    order, asks the user several things across turns, or branches. Inside it, fetch/compute steps
@@ -339,6 +386,10 @@ decision, and how the turn ended. Diagnose from that evidence, never from guesse
   when to answer; fewer overlapping tools.
 - outcome_blocked_by_guardrail → the input guard refused the message (events has the reason) → if
   legitimate, adjust the guardrail / scope in the instructions.
+- the agent engages with an unrelated request (answers it, asks about it or starts a playbook for it)
+  → the instructions have no `## Scope` section (get_application_overview → scopeDefined false) or
+  the playbook/tool description is too generic → write the Scope section (get_authoring_guide("scope"))
+  and name the business domain in the description.
 - knowledge_gap, or answered_from_knowledge with a poor reply → no good passage → add or fix the
   knowledge source.
 - wrong tool / workflow chosen (model_decision) → overlapping or vague tool descriptions → sharpen
@@ -364,6 +415,7 @@ decision, and how the turn ended. Diagnose from that evidence, never from guesse
 """
 
 GUIDES = {
+    "scope": AGENT_SCOPE,
     "capabilities": CAPABILITY_GUIDE,
     "playbook": PLAYBOOK_SCHEMA,
     "playbook_design": PLAYBOOK_DESIGN,

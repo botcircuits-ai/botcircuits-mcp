@@ -17,7 +17,7 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from .guides import CAPABILITY_GUIDE, GUIDES, PLAYBOOK_DESIGN, PLAYBOOK_SCHEMA, TROUBLESHOOTING, WORKFLOW_SCHEMA
+from .guides import AGENT_SCOPE, CAPABILITY_GUIDE, GUIDES, PLAYBOOK_DESIGN, PLAYBOOK_SCHEMA, TROUBLESHOOTING, WORKFLOW_SCHEMA
 from .tools import register_all
 
 _INSTRUCTIONS = f"""\
@@ -30,16 +30,19 @@ CHOOSING THE APPLICATION (always first)
 - If the user explicitly asked for a new application, create it with create_application.
 - Otherwise ASK before doing anything else: "Do you want to create a new application, or use an
   existing one?" For existing, call list_applications and let the user pick; for new, confirm the
-  name (and a one-line description), then call create_application. Never pick or create an
-  application on your own.
+  name and a one-line description that says which business the agent serves and what it helps
+  customers with, then call create_application. Never pick or create an application on your own.
 - New applications are always prompt-based agents (appMode "prompt_based"); every capability
   this server builds runs in that agent.
 
 HOW TO WORK
-1. Start with get_application_overview(app_id) and reuse what exists.
+1. Start with get_application_overview(app_id) and reuse what exists. If it shows
+   scopeDefined: false, the agent will respond to anything a customer asks: set the agent's
+   scope first (AGENT SCOPE below) before building anything else.
 2. Pick the construct for each capability with the policy below (recommend_implementation).
-3. Build dependencies first: codehooks / API tools / knowledge -> playbooks / workflows ->
-   agent tools and skills -> update_agent_instructions (say when to use each capability).
+3. Build in this order: scope instructions (if missing) -> codehooks / API tools / knowledge ->
+   playbooks / workflows -> agent tools and skills -> update_agent_instructions (keep the Scope
+   section, extend it for new capabilities, say when to use each capability).
 4. Iterate with validate_playbook / validate_workflow_definition until there are no errors,
    then save once. Save tools refuse invalid input and return exact errors — fix and retry.
 5. Only delete when the user asked for it.
@@ -58,6 +61,7 @@ changing anything: get_authoring_guide("troubleshooting"), then find_problem_ses
 get_session_trace -> get_turn_trace. Explain the cause with evidence from the trace, propose the
 fix, and apply it once the user agrees.
 
+{AGENT_SCOPE}
 {CAPABILITY_GUIDE}
 {PLAYBOOK_DESIGN}
 {PLAYBOOK_SCHEMA}
@@ -75,7 +79,7 @@ register_all(mcp)
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_authoring_guide(
     topic: Literal["capabilities", "playbook", "playbook_design", "playbook_examples", "workflow",
-                   "troubleshooting"],
+                   "troubleshooting", "scope"],
 ) -> str:
     """
     Return an authoring guide:
@@ -85,6 +89,7 @@ async def get_authoring_guide(
       playbook_examples  complete, validated create_playbook examples to copy from
       workflow           canvas workflow schema (complex processes only)
       troubleshooting    diagnosing a misbehaving agent from runtime traces (read before the trace tools)
+      scope              the required `## Scope` section that keeps the agent on its business's topics
 
     Args:
         topic: capabilities · playbook_design · playbook · playbook_examples · workflow · troubleshooting
@@ -136,7 +141,8 @@ Follow the playbook design procedure exactly:
    Then review it as an independent reviewer: every requirement present, correct ordering, branch
    rejoining and termination, no invented integrations or placeholders, no unconditional loops.
 7. Show me the outline and wait for my confirmation, then call create_playbook with the same arguments.
-8. Ask whether to connect it to the main agent or a sub-agent, and update the agent instructions.
+8. Ask whether to connect it to the main agent or a sub-agent, and update the agent instructions
+   (keep its `## Scope` section and add this playbook's topic to it).
 """
 
 
@@ -144,6 +150,12 @@ Follow the playbook design procedure exactly:
               description="Diagnosing a misbehaving agent from runtime traces: procedure, fields, issue → fix")
 def troubleshooting_resource() -> str:
     return TROUBLESHOOTING
+
+
+@mcp.resource("botcircuits://agent-scope", name="BotCircuits Agent Scope Guide", mime_type="text/markdown",
+              description="Keeping an agent on its business's topics: the required ## Scope section")
+def agent_scope_resource() -> str:
+    return AGENT_SCOPE
 
 
 @mcp.resource("botcircuits://capability-guide", name="BotCircuits Capability Guide", mime_type="text/markdown",
