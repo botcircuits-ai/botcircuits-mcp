@@ -139,8 +139,12 @@ document (pdf, doc, docx, csv, txt; scans/images with `ocr=true`) exactly as Kno
 After every build the host offers automated tests: `generate_test_plan` writes scenarios for
 everything the agent is connected to (plus knowledge questions) in the background,
 `start_test_run` runs them against the live agent, and `get_test_run` explains failures.
-`publish_application` (only on an explicit request) creates a Live runtime access key, publishes a
-new version and returns the website snippet plus each channel's setup page.
+Publishing is never automatic. When a build is done the host asks "Do you want to publish your
+agent?", and `publish_application` confirms again itself: on clients that support MCP elicitation the
+server asks the user directly (the AI cannot answer for them); elsewhere it returns
+`confirmation_required` until called with `user_confirmed=true` after the user said yes. Then it
+creates a Live runtime access key, publishes a new version and returns the website snippet plus
+each channel's setup page.
 
 ---
 

@@ -1,6 +1,7 @@
 """Knowledge verification, file upload, publishing and agent tests (synced from copilot-native)."""
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,10 +110,50 @@ async def test_delete_knowledge_source_reports_referencing_tools(fake):
 
 
 # ---------------------------------------------------------------- publishing
+class ElicitingContext:
+    """Stands in for FastMCP's Context on a client that can ask the user (elicitation)."""
+
+    def __init__(self, answer: bool | None, supported: bool = True):
+        self.answer, self.questions = answer, []
+        self.session = SimpleNamespace(check_client_capability=lambda caps: supported)
+
+    async def elicit(self, message, schema):
+        self.questions.append(message)
+        if self.answer is None:
+            return SimpleNamespace(action="cancel", data=None)
+        return SimpleNamespace(action="accept", data=schema(publish=self.answer))
+
+
+async def test_publish_never_happens_without_confirmation(fake):
+    result = await call("publish_application", app_id="app1", version_name="Order support v1")
+    assert result["status"] == "confirmation_required" and result["published"] is False
+    assert result["ask_user"].startswith("Do you want to publish")
+    # Nothing was created or published.
+    assert fake.access_keys == [] and fake.versions == []
+    # A client without elicitation is treated the same way.
+    unsupported = await call("publish_application", app_id="app1", ctx=ElicitingContext(True, supported=False))
+    assert unsupported["status"] == "confirmation_required" and fake.versions == []
+
+
+async def test_publish_asks_user_through_elicitation(fake):
+    declined = ElicitingContext(answer=False)
+    result = await call("publish_application", app_id="app1", user_confirmed=True, ctx=declined)
+    # The server asks even when the host claims confirmation, and a "no" wins.
+    assert declined.questions and result["status"] == "cancelled" and fake.versions == []
+
+    dismissed = await call("publish_application", app_id="app1", ctx=ElicitingContext(answer=None))
+    assert dismissed["status"] == "cancelled" and fake.versions == []
+
+    accepted = ElicitingContext(answer=True)
+    result = await call("publish_application", app_id="app1", version_name="Order support v1", ctx=accepted)
+    assert '"Order support v1"' in accepted.questions[0]
+    assert result["status"] == "published" and fake.versions[0]["versionName"] == "Order support v1"
+
+
 async def test_publish_creates_live_runtime_key_then_version(fake):
     assert (await call("get_publish_status", app_id="app1"))["published"] is False
 
-    result = await call("publish_application", app_id="app1", version_name="Order support v1")
+    result = await call("publish_application", app_id="app1", version_name="Order support v1", user_confirmed=True)
     assert result["status"] == "published" and result["firstPublish"] is True
     key = fake.access_keys[0]
     assert key["environment"] == "live" and key["scope"] == "runtime" and key["appId"] == "app1"
@@ -127,7 +168,7 @@ async def test_publish_creates_live_runtime_key_then_version(fake):
 async def test_publish_review_requested_and_default_name(fake):
     fake.versions.append({"versionId": "v1", "versionName": "Version 1"})
     fake.publish_review = True
-    result = await call("publish_application", app_id="app1")
+    result = await call("publish_application", app_id="app1", user_confirmed=True)
     assert result["status"] == "review_requested" and result["versionName"] == "Version 2"
     assert result["firstPublish"] is False
 
@@ -177,6 +218,7 @@ async def test_save_test_plan_creates_and_updates(fake):
 def test_instructions_carry_clarifying_and_testing_offer():
     assert "## Clarifying (before building)" in _INSTRUCTIONS
     assert "## Report and offer tests" in _INSTRUCTIONS
-    assert "publish_application" in _INSTRUCTIONS
+    assert "NEVER publish automatically" in _INSTRUCTIONS
+    assert "Do you want to publish your agent?" in GUIDES["publishing"]
     for topic in ("clarifying", "knowledge", "testing", "publishing"):
         assert GUIDES[topic].strip()

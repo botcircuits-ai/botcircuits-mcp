@@ -110,6 +110,10 @@ after every tool): "Would you like me to create automated tests for your agent?"
 (recommended; covers everything the agent is connected to) or "Not now". Recommended defaults are
 never consent to run tests. If the user already asked for testing, go straight to it
 (get_authoring_guide("testing")). If they decline, do not ask again until the next change.
+
+Changes stay in the draft until published. Never publish on your own: when the build (and any
+testing the user wanted) is done, ask "Do you want to publish your agent?" as its own question,
+and call publish_application only if they say yes (or they asked to publish themselves).
 """
 
 CAPABILITY_GUIDE = f"""\
@@ -528,8 +532,13 @@ PUBLISHING = """\
   it is not an error.
 
 ### Publishing
-Only publish when the user explicitly asks ("publish", "go live"): it changes what their
-customers see. Never publish as a side effect of a build.
+Publishing is never automatic: it changes what customers see. Publish only when the user
+explicitly asks ("publish", "go live") or answers yes to "Do you want to publish your agent?".
+Never publish as a side effect of a build, a fix or a test run, and never treat "use your
+recommended defaults" as a yes. `publish_application` confirms with the user itself: when the
+client can show a question, the server asks "Do you want to publish?" directly; otherwise it
+returns `status: confirmation_required` with `ask_user` — ask exactly that, and call again with
+`user_confirmed=true` only after a yes. `status: cancelled` means the user said no.
 1. If the agent has not been tested this session, you may say in one sentence that testing first
    is recommended, but do not block: the user decides.
 2. Call `publish_application(app_id, version_name, release_note)` (a version name that says what

@@ -9,12 +9,17 @@ copilot returns a chat card; here the same outcome comes back as data for the ho
 The new key is a Live, runtime-scope key: it can only chat with the published agent, which is
 what a website embeds anyway. Its value is shown once (the backend cannot return it again), so a
 new key is created on every publish rather than reused.
+
+Publishing is never automatic. publish_application asks the user "Do you want to publish?" itself
+through MCP elicitation when the client supports it (the host AI cannot answer for them); for
+other clients it refuses until called with user_confirmed=true after the user said yes.
 """
 
 from datetime import UTC, datetime
 
-from mcp.server.fastmcp import FastMCP
-from mcp.types import ToolAnnotations
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import ClientCapabilities, ElicitationCapability, ToolAnnotations
+from pydantic import BaseModel, Field
 
 from .. import client
 
@@ -37,6 +42,28 @@ def _channel_links(app_id: str) -> dict:
     return {name: f"{_CONSOLE}/app/{app_id}/{path}" for name, path in CHANNELS.items()}
 
 
+class PublishConfirmation(BaseModel):
+    publish: bool = Field(description="Yes, publish the agent now")
+
+
+def _question(app_id: str, name: str) -> str:
+    return (f'Do you want to publish your agent ({app_id}) as "{name}"? This makes the current draft live '
+            "for your customers on every connected channel.")
+
+
+async def _ask_user(ctx: Context | None, question: str) -> bool | None:
+    """The user's answer through MCP elicitation; None when the client cannot ask them."""
+    if ctx is None:
+        return None
+    try:
+        if not ctx.session.check_client_capability(ClientCapabilities(elicitation=ElicitationCapability())):
+            return None
+        answer = await ctx.elicit(question, PublishConfirmation)
+    except Exception:  # noqa: BLE001 - no request context, or the client rejected elicitation
+        return None
+    return answer.action == "accept" and bool(answer.data and answer.data.publish)
+
+
 def register(mcp: FastMCP) -> None:
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
@@ -55,24 +82,43 @@ def register(mcp: FastMCP) -> None:
                 "versionsPage": f"{_CONSOLE}/app/{app_id}/versions"}
 
     @mcp.tool(annotations=ToolAnnotations(destructiveHint=False, idempotentHint=False, openWorldHint=True))
-    async def publish_application(app_id: str, version_name: str = "", release_note: str = "") -> dict:
+    async def publish_application(app_id: str, version_name: str = "", release_note: str = "",
+                                  user_confirmed: bool = False, ctx: Context | None = None) -> dict:
         """
-        Publish the agent so customers can use it. ONLY when the user explicitly asked to publish
-        or go live — it makes the current draft live on every channel; never publish as a side
-        effect of a build. Creates a Live runtime access key for the website widget, publishes a
-        new version, and returns the website snippet plus each channel's setup page. Relay the
-        snippet and links to the user; the key value cannot be retrieved again later.
+        Publish the agent so customers can use it. Never automatic: call it only after the user
+        explicitly asked to publish / go live, or answered yes to "Do you want to publish your
+        agent?". Never call it as a side effect of a build or tests.
+
+        The server asks the user to confirm itself when the client supports it. Otherwise it
+        returns status "confirmation_required" with the question: ask the user exactly that, and
+        call again with user_confirmed=true only if they answer yes.
+
+        On success it creates a Live runtime access key for the website widget, publishes a new
+        version, and returns the website snippet plus each channel's setup page. Relay the snippet
+        and links; the key value cannot be retrieved again later.
 
         Args:
             app_id: The application ID.
             version_name: Optional version name saying what changed, e.g. "Order support v1";
                 a numbered name is used otherwise.
             release_note: Optional note on what changed in this version.
+            user_confirmed: True only when the user said yes to publishing in this conversation.
+                Never set it on your own.
         """
         existing = await client.list_versions(app_id)
         name = (version_name or "").strip()[:100] or f"Version {len(existing) + 1}"
         note = (release_note or "").strip()[:500] or RELEASE_NOTE
         result = {"versionName": name, "firstPublish": not existing}
+
+        question = _question(app_id, name)
+        answer = await _ask_user(ctx, question)
+        if answer is False:
+            return {**result, "status": "cancelled", "published": False,
+                    "note": "The user chose not to publish. Nothing changed; do not ask again unless they bring it up."}
+        if answer is None and not user_confirmed:
+            return {**result, "status": "confirmation_required", "published": False, "ask_user": question,
+                    "next_step": "Nothing was published. Ask the user this question and wait. Call "
+                                 "publish_application again with user_confirmed=true only if they answer yes."}
 
         # 1. A Live runtime key for the website widget, exactly as the Access keys page creates one.
         key_id = KEY_ID_PREFIX + datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
