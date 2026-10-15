@@ -41,6 +41,14 @@ class FakeBotCircuits:
         self.trace_summaries: dict[str, dict] = {}
         self.trace_turns: dict[tuple[str, str], dict] = {}
         self.last_query: dict = {}
+        # Knowledge previews (output=text) by dataSourceId; publishing; agent-eval plans and runs.
+        self.previews: dict[str, dict] = {}
+        self.fail_register_types: set[str] = set()
+        self.versions: list[dict] = []
+        self.publish_review = False
+        self.access_keys: list[dict] = []
+        self.test_plans: dict[str, dict] = {}
+        self.test_runs: dict[str, dict] = {}
 
     # ------------------------------------------------------------------ transport
     def transport(self) -> httpx.MockTransport:
@@ -73,6 +81,17 @@ class FakeBotCircuits:
 
         if path == "" and method == "GET":
             return ok(self.app)
+        if path == "_live/access-keys" and method == "POST":
+            key = {**body, "accessKey": f"live-key-{len(self.access_keys) + 1}"}
+            self.access_keys.append(key)
+            return ok({"data": key})
+        if path == "/versions" and method == "GET":
+            return ok({"data": list(reversed(self.versions))})
+        if path == "/publish" and method == "POST":
+            self.versions.append({"versionId": f"v{len(self.versions) + 1}", **body})
+            return ok({"message": "review-requested" if self.publish_review else "published"})
+        if path.startswith("/agent-eval/"):
+            return self.eval_route(method, path.removeprefix("/agent-eval"), body)
         if path.startswith("/traces/sessions") and method == "GET":
             return self.trace_route(path.removeprefix("/traces/sessions"))
         if path == "/prompt-config/instructions":
@@ -182,6 +201,8 @@ class FakeBotCircuits:
         if path == "/knowledge/data-sources":
             if method == "GET":
                 return ok(list(self.sources.values()))
+            if body.get("dataSourceType") in self.fail_register_types:
+                return httpx.Response(500, json={"message": "crawler unavailable"})
             internal = uuid.uuid4().hex[:8]
             status = "ready" if body.get("dataSourceType") == "text" else "preparing"
             self.sources[body["dataSourceId"]] = {**body, "id": internal, "modelStatus": status}
@@ -191,6 +212,16 @@ class FakeBotCircuits:
         if path == "/knowledge/data-sources/file/url":
             return ok({"uploadUrl": f"https://{UPLOAD_HOST}/kb/{body['metadata']['dataSourceId']}",
                        "metadata": body["metadata"]})
+        match = re.fullmatch(r"/knowledge/data-sources/([^/]+)/preview", path)
+        if match and method == "GET":
+            preview = self.previews.get(match.group(1))
+            if preview is None:
+                return missing
+            content = preview.get("content", "")
+            start, size = int(self.last_query.get("offset", 0)), int(self.last_query.get("maxChars", 8000))
+            return ok({"data": {**preview, "content": content[start:start + size], "totalChars": len(content),
+                                "offset": start, "truncated": start + size < len(content),
+                                "empty": not content.strip()}})
         match = re.fullmatch(r"/knowledge/data-sources/([^/]+)", path)
         if match and method == "DELETE":
             internal = match.group(1)
@@ -201,6 +232,38 @@ class FakeBotCircuits:
             return missing
 
         return httpx.Response(404, json={"message": f"no fake route {method} {path}"})
+
+    def eval_route(self, method: str, rest: str, body: dict) -> httpx.Response:
+        ok = lambda data: httpx.Response(200, json={"data": data})
+        if rest == "/plans" and method == "GET":
+            return ok(list(self.test_plans.values()))
+        if rest in ("/plans", "/plans/generate") and method == "POST":
+            plan_id = f"plan{len(self.test_plans) + 1}"
+            plan = ({**body, "id": plan_id} if rest == "/plans" else
+                    {"id": plan_id, "name": "Generated", "generationStatus": "generating", "categories": []})
+            self.test_plans[plan_id] = plan
+            return ok(plan)
+        match = re.fullmatch(r"/plans/([^/]+)(/generate)?", rest)
+        if match:
+            plan_id = match.group(1)
+            if plan_id not in self.test_plans:
+                return httpx.Response(404, json={"message": "no plan"})
+            if method == "PUT":
+                self.test_plans[plan_id] = {**body, "id": plan_id}
+            elif match.group(2):
+                self.test_plans[plan_id] = {**self.test_plans[plan_id], "generationStatus": "generating"}
+            return ok(self.test_plans[plan_id])
+        if rest == "/runs" and method == "POST":
+            run_id = f"run{len(self.test_runs) + 1}"
+            self.test_runs[run_id] = {"runId": run_id, "planId": body["planId"], "caseIds": body.get("caseIds"),
+                                      "status": "running", "cases": []}
+            return ok({k: v for k, v in self.test_runs[run_id].items() if k != "cases"})
+        if rest == "/runs" and method == "GET":
+            return ok(list(self.test_runs.values()))
+        match = re.fullmatch(r"/runs/([^/]+)", rest)
+        if match and match.group(1) in self.test_runs:
+            return ok(json.loads(json.dumps(self.test_runs[match.group(1)])))
+        return httpx.Response(404, json={"message": f"no fake eval route {method} {rest}"})
 
     def trace_route(self, rest: str) -> httpx.Response:
         query = self.last_query

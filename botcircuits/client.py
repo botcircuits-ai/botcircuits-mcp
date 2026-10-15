@@ -127,10 +127,6 @@ async def delete_app(app_id: str) -> dict:
     return await _request("DELETE", _app(app_id))
 
 
-async def publish_app(app_id: str) -> dict:
-    return await _request("POST", f"{_app(app_id)}/publish")
-
-
 # ---------------------------------------------------------------------------
 # Agent core settings (read-modify-write) and global instructions
 # ---------------------------------------------------------------------------
@@ -332,6 +328,90 @@ async def save_text_source(app_id: str, data_source_id: str, text: str) -> dict:
 
 async def register_data_source(app_id: str, metadata: dict) -> dict:
     return await _request("POST", f"{_app(app_id)}/knowledge/data-sources", metadata)
+
+
+async def preview_data_source(app_id: str, data_source_id: str, offset: int = 0, max_chars: int | None = None) -> dict:
+    """A source's stored content as plain text (pdf/docx converted), paged by offset/maxChars,
+    with modelStatus and an `empty` flag — the console's preview with output=text."""
+    params = {"output": "text"}
+    if offset:
+        params["offset"] = str(offset)
+    if max_chars:
+        params["maxChars"] = str(max_chars)
+    return _unwrap(await _request(
+        "GET", f"{_app(app_id)}/knowledge/data-sources/{_safe(data_source_id)}/preview", params=params))
+
+
+async def file_upload_url(app_id: str, file_ext: str, metadata: dict) -> dict:
+    """Presigned upload for a document source: {uploadUrl, metadata}. The returned metadata (with
+    the stored key) is what register_data_source takes after the upload, as Knowledge → Files does."""
+    return _unwrap(await _request("POST", f"{_app(app_id)}/knowledge/data-sources/file/url",
+                                  {"fileExt": file_ext, "metadata": metadata}))
+
+
+async def delete_data_source(app_id: str, internal_id: str) -> dict:
+    """The delete route takes the record's internal `id`, as the console sends it."""
+    return await _request("DELETE", f"{_app(app_id)}/knowledge/data-sources/{_safe(internal_id)}",
+                          params={"returnOriginal": "false"})
+
+
+# ---------------------------------------------------------------------------
+# Publishing (botcircuits-platform services/app/app-service.js, app-access-key-service.js)
+# ---------------------------------------------------------------------------
+async def list_versions(app_id: str) -> list:
+    value = _unwrap(await _request("GET", f"{_app(app_id)}/versions"))
+    value = value.get("versions", value) if isinstance(value, dict) else value
+    return [v for v in value if isinstance(v, dict)] if isinstance(value, list) else []
+
+
+async def publish_version(app_id: str, version_name: str, release_note: str) -> dict:
+    return await _request("POST", f"{_app(app_id)}/publish",
+                          {"versionName": version_name, "releaseNote": release_note, "reviewRequest": False})
+
+
+async def create_live_runtime_key(app_id: str, key_id: str) -> dict:
+    """A Live (published-version), runtime-scope access key; its value is returned only now."""
+    return _unwrap(await _request("POST", f"{_app(app_id + '_live')}/access-keys",
+                                  {"appId": app_id, "environment": "live", "scope": "runtime", "keyId": key_id}))
+
+
+# ---------------------------------------------------------------------------
+# Agent tests (botcircuits-backend agent-eval)
+# ---------------------------------------------------------------------------
+def _eval(app_id: str) -> str:
+    return f"{_app(app_id)}/agent-eval"
+
+
+async def list_test_plans(app_id: str) -> Any:
+    return _unwrap(await _request("GET", f"{_eval(app_id)}/plans"))
+
+
+async def get_test_plan(app_id: str, plan_id: str) -> dict:
+    return _unwrap(await _request("GET", f"{_eval(app_id)}/plans/{_safe(plan_id, 'plan_id')}"))
+
+
+async def generate_test_plan(app_id: str, plan_id: str = "") -> dict:
+    path = f"{_eval(app_id)}/plans/{_safe(plan_id, 'plan_id')}/generate" if plan_id else f"{_eval(app_id)}/plans/generate"
+    return _unwrap(await _request("POST", path, {"background": True}))
+
+
+async def save_test_plan(app_id: str, plan: dict, plan_id: str = "") -> dict:
+    if plan_id:
+        return _unwrap(await _request("PUT", f"{_eval(app_id)}/plans/{_safe(plan_id, 'plan_id')}", plan))
+    return _unwrap(await _request("POST", f"{_eval(app_id)}/plans", plan))
+
+
+async def start_test_run(app_id: str, plan_id: str, case_ids: list[str] | None = None) -> dict:
+    return _unwrap(await _request("POST", f"{_eval(app_id)}/runs",
+                                  {"planId": _safe(plan_id, "plan_id"), "caseIds": case_ids}))
+
+
+async def get_test_run(app_id: str, run_id: str) -> dict:
+    return _unwrap(await _request("GET", f"{_eval(app_id)}/runs/{_safe(run_id, 'run_id')}"))
+
+
+async def list_test_runs(app_id: str, limit: int = 10) -> Any:
+    return _unwrap(await _request("GET", f"{_eval(app_id)}/runs", params={"limit": str(limit)}))
 
 
 # ---------------------------------------------------------------------------

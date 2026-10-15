@@ -7,8 +7,10 @@ from . import (
     knowledge,
     mcp_servers,
     playbooks,
+    publishing,
     skills,
     sub_agents,
+    testing,
     traces,
     workflows,
 )
@@ -25,3 +27,5 @@ def register_all(mcp: FastMCP) -> None:
     mcp_servers.register(mcp)
     knowledge.register(mcp)
     traces.register(mcp)
+    publishing.register(mcp)
+    testing.register(mcp)

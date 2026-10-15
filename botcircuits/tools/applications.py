@@ -148,16 +148,6 @@ def register(mcp: FastMCP) -> None:
         """
         return f"Deleting applications through MCP is not allowed yet. Please use {_CONSOLE}"
 
-    @mcp.tool()
-    async def publish_application(app_id: str) -> str:
-        """
-        Publish an application to production. Not available through MCP yet.
-
-        Args:
-            app_id: The application ID.
-        """
-        return f"Publishing applications through MCP is not allowed yet. Please use {_CONSOLE}"
-
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def get_application_core_settings(app_id: str) -> dict:
         """

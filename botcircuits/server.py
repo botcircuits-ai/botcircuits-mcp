@@ -17,7 +17,20 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from .guides import AGENT_SCOPE, CAPABILITY_GUIDE, GUIDES, PLAYBOOK_DESIGN, PLAYBOOK_SCHEMA, TROUBLESHOOTING, WORKFLOW_SCHEMA
+from .guides import (
+    AGENT_SCOPE,
+    CAPABILITY_GUIDE,
+    CLARIFYING,
+    GUIDES,
+    KNOWLEDGE,
+    PLAYBOOK_DESIGN,
+    PLAYBOOK_SCHEMA,
+    PUBLISHING,
+    TESTING,
+    TESTING_OFFER,
+    TROUBLESHOOTING,
+    WORKFLOW_SCHEMA,
+)
 from .tools import register_all
 
 _INSTRUCTIONS = f"""\
@@ -39,13 +52,21 @@ HOW TO WORK
 1. Start with get_application_overview(app_id) and reuse what exists. If it shows
    scopeDefined: false, the agent will respond to anything a customer asks: set the agent's
    scope first (AGENT SCOPE below) before building anything else.
-2. Pick the construct for each capability with the policy below (recommend_implementation).
-3. Build in this order: scope instructions (if missing) -> codehooks / API tools / knowledge ->
+2. Clarify what blocks you before building ("Clarifying" below): one focused question at a time,
+   with concrete options and a recommended default. Never invent business facts, prices,
+   policies, API contracts or credentials.
+3. Pick the construct for each capability with the policy below (recommend_implementation).
+4. Build in this order: scope instructions (if missing) -> codehooks / API tools / knowledge ->
    playbooks / workflows -> agent tools and skills -> update_agent_instructions (keep the Scope
    section, extend it for new capabilities, say when to use each capability).
-4. Iterate with validate_playbook / validate_workflow_definition until there are no errors,
+5. Iterate with validate_playbook / validate_workflow_definition until there are no errors,
    then save once. Save tools refuse invalid input and return exact errors — fix and retry.
-5. Only delete when the user asked for it.
+6. Knowledge from the web or a file is not usable until preview_knowledge_source returns
+   verdict "ok"; if a crawl captured nothing, suggest adding the content as a file
+   (get_authoring_guide("knowledge")).
+7. Report and offer automated tests ("Report and offer tests" below).
+8. Only delete when the user asked for it. Only publish (publish_application) when the user
+   explicitly asked to publish or go live (get_authoring_guide("publishing")).
 
 AFTER CREATING A PLAYBOOK OR WORKFLOW, always ask: "Would you like to connect it to a
 sub-agent's capabilities, or directly as a main agent tool?" Then do exactly ONE of:
@@ -61,14 +82,17 @@ changing anything: get_authoring_guide("troubleshooting"), then find_problem_ses
 get_session_trace -> get_turn_trace. Explain the cause with evidence from the trace, propose the
 fix, and apply it once the user agrees.
 
+{CLARIFYING}
 {AGENT_SCOPE}
+{TESTING_OFFER}
 {CAPABILITY_GUIDE}
 {PLAYBOOK_DESIGN}
 {PLAYBOOK_SCHEMA}
 Before writing your first playbook in a session, read the worked examples:
 get_authoring_guide("playbook_examples") (or botcircuits://playbook-examples). They all compile.
 Canvas workflow schema: call get_authoring_guide("workflow") or read botcircuits://workflow-schema
-before writing a workflow.
+before writing a workflow. Knowledge, testing and publishing: get_authoring_guide("knowledge" |
+"testing" | "publishing").
 """
 
 mcp = FastMCP(name="BotCircuits", instructions=_INSTRUCTIONS)
@@ -79,7 +103,7 @@ register_all(mcp)
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 async def get_authoring_guide(
     topic: Literal["capabilities", "playbook", "playbook_design", "playbook_examples", "workflow",
-                   "troubleshooting", "scope"],
+                   "troubleshooting", "scope", "clarifying", "knowledge", "testing", "publishing"],
 ) -> str:
     """
     Return an authoring guide:
@@ -90,9 +114,14 @@ async def get_authoring_guide(
       workflow           canvas workflow schema (complex processes only)
       troubleshooting    diagnosing a misbehaving agent from runtime traces (read before the trace tools)
       scope              the required `## Scope` section that keeps the agent on its business's topics
+      clarifying         how to ask the user: one question, concrete options, a recommended default
+      knowledge          adding text / web / file sources, verifying them with a preview, kb tools
+      testing            generating automated test scenarios, running them and explaining failures
+      publishing         publishing a version, the website snippet, channels and access keys
 
     Args:
-        topic: capabilities · playbook_design · playbook · playbook_examples · workflow · troubleshooting
+        topic: capabilities · playbook_design · playbook · playbook_examples · workflow · troubleshooting ·
+            scope · clarifying · knowledge · testing · publishing
     """
     return GUIDES[topic]
 
@@ -132,7 +161,8 @@ Requirements from the user:
 Follow the playbook design procedure exactly:
 1. Call get_application_overview("{app_id}") and get_authoring_guide("playbook_examples").
 2. Write the one-sentence outcome and list every input and where it comes from. If an API, policy
-   or important wording is missing, ask me before building — do not invent it.
+   or important wording is missing, ask me before building — one question at a time, with concrete
+   options and a recommended default where one exists. Do not invent it.
 3. Create any missing codehook / API tool / knowledge source first and note the ids and output variables.
 4. Define the variables (strictest dataType; values lists include every button payload).
 5. Draft sections and steps: happy path first, then every unhappy path (invalid answer, not found or
@@ -143,6 +173,7 @@ Follow the playbook design procedure exactly:
 7. Show me the outline and wait for my confirmation, then call create_playbook with the same arguments.
 8. Ask whether to connect it to the main agent or a sub-agent, and update the agent instructions
    (keep its `## Scope` section and add this playbook's topic to it).
+9. Summarize what changed and offer to create automated tests for the agent.
 """
 
 
@@ -156,6 +187,24 @@ def troubleshooting_resource() -> str:
               description="Keeping an agent on its business's topics: the required ## Scope section")
 def agent_scope_resource() -> str:
     return AGENT_SCOPE
+
+
+@mcp.resource("botcircuits://knowledge", name="BotCircuits Knowledge Guide", mime_type="text/markdown",
+              description="Adding text, web and file knowledge, verifying it with a preview, kb tools")
+def knowledge_resource() -> str:
+    return KNOWLEDGE
+
+
+@mcp.resource("botcircuits://testing", name="BotCircuits Agent Testing Guide", mime_type="text/markdown",
+              description="Generating, running and explaining automated agent tests")
+def testing_resource() -> str:
+    return TESTING
+
+
+@mcp.resource("botcircuits://publishing", name="BotCircuits Publishing Guide", mime_type="text/markdown",
+              description="Publishing versions, the website snippet, channels and access keys")
+def publishing_resource() -> str:
+    return PUBLISHING
 
 
 @mcp.resource("botcircuits://capability-guide", name="BotCircuits Capability Guide", mime_type="text/markdown",

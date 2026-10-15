@@ -99,9 +99,9 @@ You → Claude Code → "customers should be able to return an order"
 
 | Mechanism | When | Contains |
 |---|---|---|
-| `server.instructions` | Every connection (MCP `initialize`) | Build flow, agent scope (required `## Scope` section), construct policy, troubleshooting entry point, playbook design method + checklist, playbook format |
-| `get_authoring_guide(topic)` tool | On demand, any client | `capabilities`, `playbook_design`, `playbook`, `playbook_examples`, `workflow`, `troubleshooting`, `scope` |
-| `botcircuits://…` resources | On demand, clients that read resources | Same seven guides |
+| `server.instructions` | Every connection (MCP `initialize`) | Build flow, clarifying (one question, concrete options, recommended default), agent scope (required `## Scope` section), report + offer tests, construct policy, troubleshooting entry point, playbook design method + checklist, playbook format |
+| `get_authoring_guide(topic)` tool | On demand, any client | `capabilities`, `playbook_design`, `playbook`, `playbook_examples`, `workflow`, `troubleshooting`, `scope`, `clarifying`, `knowledge`, `testing`, `publishing` |
+| `botcircuits://…` resources | On demand, clients that read resources | The same guides |
 | `design_playbook` prompt | User-invoked (e.g. a slash command) | Step-by-step: overview → inputs → resources → variables → steps → validate → confirm → save |
 
 ### Playbooks that work
@@ -126,6 +126,22 @@ slow), the host AI reads the runtime traces before changing anything — broad t
 they were judged on). `get_authoring_guide("troubleshooting")` maps each issue to its likely
 configuration fix. Read-only; traces are kept for 30 days.
 
+### Knowledge that is actually there
+
+A web crawl can "succeed" and capture nothing (blocked, JavaScript-only or login pages).
+`preview_knowledge_source` reads a source back as plain text and returns a `verdict`
+(`ok` · `processing` · `stalled` · `failed` · `empty`); only `ok` is usable, and anything else comes
+with a `next_step` that suggests adding the content as a file. `add_file_knowledge` uploads a local
+document (pdf, doc, docx, csv, txt; scans/images with `ocr=true`) exactly as Knowledge → Files does.
+
+### Testing and publishing
+
+After every build the host offers automated tests: `generate_test_plan` writes scenarios for
+everything the agent is connected to (plus knowledge questions) in the background,
+`start_test_run` runs them against the live agent, and `get_test_run` explains failures.
+`publish_application` (only on an explicit request) creates a Live runtime access key, publishes a
+new version and returns the website snippet plus each channel's setup page.
+
 ---
 
 ## What to build: the construct policy
@@ -143,11 +159,11 @@ Delivered to the host AI on connect and enforced by the save tools:
 `upload_workflow` rejects a *new* workflow below those thresholds and points to `create_playbook`.
 Playbooks and workflows are validated against the runtime's rules before anything is saved.
 
-## Tool inventory (53)
+## Tool inventory (64)
 
 | Group | Tools |
 |---|---|
-| Applications (10) | `list_applications`, `get_application`, `get_application_overview`, `get_application_core_settings`, `update_application_core_settings`, `get_agent_instructions`, `update_agent_instructions`, `create_application`, `delete_application`\*, `publish_application`\* |
+| Applications (9) | `list_applications`, `get_application`, `get_application_overview`, `get_application_core_settings`, `update_application_core_settings`, `get_agent_instructions`, `update_agent_instructions`, `create_application`, `delete_application`\* |
 | Design (2) | `recommend_implementation`, `get_authoring_guide` |
 | Playbooks (6) | `list_playbooks`, `get_playbook`, `validate_playbook`, `create_playbook`, `update_playbook`, `delete_playbook` |
 | Workflows (5) | `list_workflows`, `get_workflow`, `validate_workflow_definition`, `upload_workflow`, `delete_workflow` |
@@ -156,13 +172,16 @@ Playbooks and workflows are validated against the runtime's rules before anythin
 | Sub-agents (5) | `list_sub_agents`, `get_sub_agent`, `create_sub_agent`, `update_sub_agent`, `delete_sub_agent` |
 | Skills (5) | `list_skills`, `get_skill`, `create_skill`, `update_skill`, `delete_skill` |
 | MCP servers (4) | `list_mcp_servers`, `create_mcp_server`, `update_mcp_server`, `delete_mcp_server` |
-| Knowledge (3) | `list_knowledge_sources`, `add_text_knowledge`, `add_web_knowledge` |
+| Knowledge (6) | `list_knowledge_sources`, `preview_knowledge_source`, `add_text_knowledge`, `add_web_knowledge`, `add_file_knowledge`, `delete_knowledge_source` |
+| Publishing (2) | `get_publish_status`, `publish_application` |
+| Agent tests (7) | `list_test_plans`, `get_test_plan`, `generate_test_plan`, `save_test_plan`, `start_test_run`, `get_test_run`, `list_test_runs` |
 | Troubleshooting (3) | `find_problem_sessions`, `get_session_trace`, `get_turn_trace` (read-only) |
 
 \* Still disabled through MCP — use the console. Delete tools carry the MCP `destructiveHint` annotation.
 
 Resources: `botcircuits://capability-guide`, `botcircuits://playbook-design`, `botcircuits://playbook-schema`,
-`botcircuits://playbook-examples`, `botcircuits://workflow-schema`, `botcircuits://troubleshooting`, `botcircuits://agent-scope`
+`botcircuits://playbook-examples`, `botcircuits://workflow-schema`, `botcircuits://troubleshooting`, `botcircuits://agent-scope`,
+`botcircuits://knowledge`, `botcircuits://testing`, `botcircuits://publishing`
 (also available through `get_authoring_guide` for clients that don't read resources).
 
 ## Project structure
